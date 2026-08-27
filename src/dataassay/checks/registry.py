@@ -17,9 +17,15 @@ from dataassay.checks.structural import (
     Mojibake,
     SchemaDrift,
 )
-from dataassay.checks.temporal import CadenceGap, FlatlineTail, FutureDates
+from dataassay.checks.temporal import (
+    CadenceGap,
+    FileOrder,
+    FlatlineTail,
+    FutureDates,
+    StaleTail,
+)
 
-CATALOG_VERSION = "2026.08.4"
+CATALOG_VERSION = "2026.08.5"
 
 CATALOG: list[Check] = [
     ConstantNumericColumn(),
@@ -29,6 +35,8 @@ CATALOG: list[Check] = [
     DuplicateGrain(),
     FutureDates(),
     CadenceGap(),
+    FileOrder(),
+    StaleTail(),
     FlatlineTail(),
     SaturationAtBound(),
     NegligibleResidue(),

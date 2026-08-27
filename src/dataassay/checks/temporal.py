@@ -20,6 +20,10 @@ from dataassay.columns import q
 MIN_POINTS_FOR_CADENCE = 12
 FORECAST_FLAG_NAMES = ("is_forecast", "forecast", "is_projection", "projected",
                        "is_estimate", "scenario")
+# A stamp recording when the row was WRITTEN. Useless as a time axis and
+# invaluable as a reference for how far behind the observations are.
+_RUN_STAMPS = ("run_date", "load_date", "ingested_at", "created_at",
+               "fetched_at", "updated_at", "etl_date")
 
 
 def _needs_time_axis(ctx: CheckContext) -> Applicability | None:
@@ -37,7 +41,7 @@ def _needs_time_axis(ctx: CheckContext) -> Applicability | None:
 
 def _series_sql(ctx: CheckContext, value_col: str | None = None) -> str:
     s = ctx.structure
-    cols = [f"{q(s.time_axis)} AS t"]
+    cols = [f"{s.time_expr} AS t"]
     cols += [q(g) for g in s.group_columns]
     if value_col:
         cols.append(f"{q(value_col)} AS v")
@@ -72,9 +76,9 @@ class FutureDates:
     def run(self, ctx: CheckContext) -> list[Finding]:
         axis = ctx.structure.time_axis
         rows = ctx.fetch(
-            f"SELECT count(*), max({q(axis)}), "
-            f"date_diff('day', current_date, max(CAST({q(axis)} AS DATE))) "
-            f"FROM {ctx.source} WHERE CAST({q(axis)} AS DATE) > current_date"
+            f"SELECT count(*), max({ctx.structure.time_expr}), "
+            f"date_diff('day', current_date, max(CAST({ctx.structure.time_expr} AS DATE))) "
+            f"FROM {ctx.source} WHERE CAST({ctx.structure.time_expr} AS DATE) > current_date"
         )
         count, furthest, days_ahead = rows[0]
         if not count:
@@ -139,8 +143,8 @@ class FutureDates:
                       "days_ahead": days_ahead, "cadence_days": cadence_days,
                       "forecast_flag": has_flag[0] if has_flag else None},
             predicate=(
-                f"SELECT count(*), max({q(axis)}) FROM <source> "
-                f"WHERE CAST({q(axis)} AS DATE) > current_date"
+                f"SELECT count(*), max({ctx.structure.time_expr}) FROM <source> "
+                f"WHERE CAST({ctx.structure.time_expr} AS DATE) > current_date"
             ),
             confidence=Confidence(level, inputs),
         )]
@@ -269,8 +273,8 @@ class CadenceGap:
             },
             predicate=(
                 f"SELECT prev, t, date_diff('day', prev, t) FROM (SELECT "
-                f"lag({q(ctx.structure.time_axis)}) OVER ({order}) prev, "
-                f"{q(ctx.structure.time_axis)} t FROM <source>) "
+                f"lag({ctx.structure.time_expr}) OVER ({order}) prev, "
+                f"{ctx.structure.time_expr} t FROM <source>) "
                 f"WHERE date_diff('day', prev, t) > {cadence}"
             ),
             confidence=Confidence(MEDIUM, inputs),
@@ -359,8 +363,8 @@ class FlatlineTail:
                     "longest_prior_run": longest_before,
                 },
                 predicate=(
-                    f"SELECT {q(ctx.structure.time_axis)}, {q(col.name)} "
-                    f"FROM <source> ORDER BY {q(ctx.structure.time_axis)} DESC "
+                    f"SELECT {ctx.structure.time_expr}, {q(col.name)} "
+                    f"FROM <source> ORDER BY {ctx.structure.time_expr} DESC "
                     f"LIMIT {tail[0] + 2}"
                 ),
                 confidence=Confidence(MEDIUM, [
@@ -370,3 +374,232 @@ class FlatlineTail:
                 ]),
             ))
         return out
+
+
+class FileOrder:
+    spec = CheckSpec(
+        id="file_order",
+        name="Rows are not stored in time order",
+        detects="A file whose physical row order does not follow its own time axis.",
+        gate="An established time axis.",
+        default_disposition=SUSPECT,
+        not_the_obvious=(
+            "Every value in the file can be correct and this still bites. It is "
+            "not about the data, it is about the ORDER, and the order is what a "
+            "great deal of code silently depends on -- tail(1), iloc[-1], "
+            "'the last row', a chart that plots rows as it reads them.\n\n"
+            "The sharpest form of the question is not how many pairs are out of "
+            "sequence but whether the LAST row is the latest observation, "
+            "because that is the one most consumers actually take.\n\n"
+            "A panel breaks the naive version. A file holding two interleaved "
+            "series and grouped by series is out of global time order by "
+            "construction and perfectly fine, so the inversions are counted "
+            "WITHIN each series too. Disorder inside a series is the defect; "
+            "disorder only between them is just how the file is laid out."
+        ),
+        traces_to=(
+            "H7: a cold-storage CSV sorted alphabetically by month name — APR, "
+            "AUG, DEC, FEB, JAN — so every surface that read the last row served "
+            "March as 'latest' while April was sitting in the file."
+        ),
+    )
+
+    def applies(self, ctx: CheckContext) -> Applicability:
+        blocked = _needs_time_axis(ctx)
+        if blocked:
+            return blocked
+        if ctx.profile.provenance.row_count < 3:
+            return Applicability.no("fewer than 3 rows: order is meaningless")
+        return Applicability.yes()
+
+    def run(self, ctx: CheckContext) -> list[Finding]:
+        expr = ctx.structure.time_expr
+        # A bare window preserves scan order, which for a file read is the order
+        # the rows are physically stored in.
+        groups = ctx.structure.group_columns
+        gsel = "".join(f", {q(g)}" for g in groups)
+        within = (
+            f"PARTITION BY {', '.join(q(g) for g in groups)} ORDER BY rn"
+            if groups else "ORDER BY rn"
+        )
+        rows = ctx.fetch(
+            f"WITH n AS (SELECT row_number() OVER () AS rn, {expr} AS t{gsel} "
+            f"           FROM {ctx.source}), "
+            f"d AS (SELECT t, lag(t) OVER (ORDER BY rn) AS prev, "
+            f"             lag(t) OVER ({within}) AS prev_in_series FROM n) "
+            f"SELECT count(*) FILTER (WHERE t < prev), "
+            f"       count(*) FILTER (WHERE t < prev_in_series), "
+            f"       (SELECT max(t) FROM n), "
+            f"       (SELECT t FROM n ORDER BY rn DESC LIMIT 1), "
+            f"       count(*) FROM d"
+        )
+        inversions, in_series, latest, last_row, total = rows[0]
+        if not inversions:
+            return []
+
+        last_is_latest = last_row == latest
+        share = inversions / max(total - 1, 1)
+        grouped_panel = bool(groups) and not in_series
+
+        disposition = SUSPECT if (grouped_panel or last_is_latest) else DEFECT
+
+        inputs = [
+            f"{inversions:,} of {total - 1:,} adjacent row pairs go backwards "
+            f"in time ({share:.0%})",
+        ]
+        if grouped_panel:
+            inputs.append(
+                f"but every one of the {' × '.join(groups)} series is "
+                "individually in order — the file is grouped by series, which "
+                "is a layout, not a defect"
+            )
+        elif in_series:
+            inputs.append(
+                f"{in_series:,} of them are inside a single series, where "
+                "order cannot be explained by layout"
+            )
+        if last_is_latest:
+            inputs.append(
+                "the last row is still the most recent observation, so "
+                "'take the last row' happens to work here"
+            )
+        else:
+            inputs.append(
+                f"the last row is {last_row}, but the most recent observation "
+                f"is {latest} — anything reading the final row gets the wrong "
+                "record"
+            )
+
+        return [Finding(
+            check_id=self.spec.id,
+            column=None,
+            disposition=disposition,
+            summary=(
+                (f"Rows are not stored in time order: {inversions:,} adjacent "
+                 f"pair(s) move backwards. ")
+                + ("Each series is individually in order, so this is the file's "
+                   "layout rather than a sorting fault — but t"
+                   if grouped_panel else "T")
+                + (f"he file ends at {last_row} while the latest observation is "
+                   f"{latest}, so anything that takes the last row — tail(1), "
+                   "iloc[-1], a chart plotting rows as read — is serving the "
+                   "wrong record."
+                   if not last_is_latest else
+                   "he final row is still the newest, so this is a presentation "
+                   "problem rather than a wrong answer — for now.")
+            ),
+            evidence={"inversions": int(inversions),
+                      "inversions_within_series": int(in_series),
+                      "grouped_panel": grouped_panel, "rows": int(total),
+                      "last_row": str(last_row), "latest": str(latest),
+                      "last_is_latest": bool(last_is_latest)},
+            predicate=(
+                f"SELECT row_number() OVER () AS rn, {expr} AS t FROM <source> "
+                f"-- then look for t decreasing as rn increases"
+            ),
+            confidence=Confidence(HIGH, inputs),
+        )]
+
+
+class StaleTail:
+    spec = CheckSpec(
+        id="stale_tail",
+        name="The series stops well before the file was written",
+        detects="A feed that quietly stopped arriving while the file kept being rewritten.",
+        gate="A time axis, an establishable cadence, and a load stamp or today's date.",
+        default_disposition=DEFECT,
+        not_the_obvious=(
+            "A freshness check on the FILE says everything is fine: it was "
+            "written today. The rows are new; the observations are not.\n\n"
+            "Comparing against today also only works on the day you look. "
+            "Comparing against the file's own load stamp works on an archived "
+            "copy months later, which is the difference between a check that "
+            "can be run and one that can be re-run.\n\n"
+            "The threshold cannot be a fixed number of periods. A daily series "
+            "is routinely several days behind on a Monday, and \"three periods\" "
+            "flags every business-day feed in existence. The bar is the series' "
+            "OWN largest historical gap, doubled — a lag it has never taken "
+            "before, rather than a lag someone decided was too long."
+        ),
+        traces_to=(
+            "H14: a fetcher that was never scheduled left its file frozen at "
+            "2026-05-07 and invisible to the freshness monitor, which was "
+            "reading the file's timestamp rather than its contents."
+        ),
+    )
+
+    def applies(self, ctx: CheckContext) -> Applicability:
+        blocked = _needs_time_axis(ctx)
+        if blocked:
+            return blocked
+        if ctx.profile.provenance.row_count < MIN_POINTS_FOR_CADENCE:
+            return Applicability.no("too few rows to establish a cadence")
+        return Applicability.yes()
+
+    def run(self, ctx: CheckContext) -> list[Finding]:
+        cadence = _modal_gap_days(ctx)
+        if not cadence:
+            return []
+        stamp_col = next(
+            (c.name for c in ctx.profile.columns
+             if c.kind == "temporal" and c.name.lower() in _RUN_STAMPS), None
+        )
+        reference = f"max({q(stamp_col)})" if stamp_col else "current_date"
+        rows = ctx.fetch(
+            f"SELECT max(CAST({ctx.structure.time_expr} AS DATE)), "
+            f"       CAST({reference} AS DATE), "
+            f"       date_diff('day', max(CAST({ctx.structure.time_expr} AS DATE)), "
+            f"                 CAST({reference} AS DATE)) "
+            f"FROM {ctx.source}"
+        )
+        last, ref, behind = rows[0]
+        if behind is None or behind <= 0:
+            return []
+        periods = behind / cadence
+
+        # The series' own worst gap is the bar. Anything it has done before is
+        # not evidence that it has stopped.
+        part = ctx.structure.partition
+        order = f"{part} ORDER BY t" if part else "ORDER BY t"
+        gap_rows = ctx.fetch(
+            f"SELECT max(gap) FROM (SELECT date_diff('day', "
+            f"  lag(CAST(t AS DATE)) OVER ({order}), CAST(t AS DATE)) AS gap "
+            f"  FROM ({_series_sql(ctx)}))"
+        )
+        worst_gap = int(gap_rows[0][0] or 0)
+        threshold = max(worst_gap * 2, cadence * 3)
+        if behind <= threshold:
+            return []
+
+        against = (
+            f"its own {stamp_col!r} stamp of {ref}" if stamp_col
+            else f"today ({ref})"
+        )
+        return [Finding(
+            check_id=self.spec.id,
+            column=None,
+            disposition=DEFECT if stamp_col and periods >= 3 else SUSPECT,
+            summary=(
+                f"The last observation is {last}, {behind:,} day(s) — about "
+                f"{periods:.0f} periods of a {cadence}-day cadence — before "
+                f"{against}. The file is being written; the data is not "
+                "arriving."
+            ),
+            evidence={"last_observation": str(last), "reference": str(ref),
+                      "days_behind": int(behind), "periods_behind": round(periods, 1),
+                      "cadence_days": cadence, "stamp_column": stamp_col,
+                      "worst_historical_gap_days": worst_gap,
+                      "threshold_days": threshold},
+            predicate=(
+                f"SELECT max({ctx.structure.time_expr}), {reference} FROM <source>"
+            ),
+            confidence=Confidence(HIGH if stamp_col else MEDIUM, [
+                f"cadence of {cadence} day(s) learned from the series",
+                f"{behind:,} day(s) behind exceeds twice this series' own worst "
+                f"historical gap ({worst_gap} day(s)) — a lag it has never taken",
+                f"compared against {against}",
+                ("the load stamp travels with the file, so this holds on an "
+                 "archived copy too" if stamp_col else
+                 "no load stamp in the file, so this is only true as of today"),
+            ]),
+        )]

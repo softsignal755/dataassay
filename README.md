@@ -22,10 +22,15 @@ report next to what did run.
 self-contained report and a flagged-items CSV. `assay profile` characterizes;
 `assay catalog` prints what the checks are; `assay init` writes a manifest.
 
-Eleven checks, each earned by a real defect found in a production pipeline:
+Thirteen checks, each earned by a real defect found in a production pipeline:
 constant/all-zero columns, mojibake, duplicate rows, duplicate grain, future
-dates, cadence gaps, flatline tails, saturation at a bound, negligible residue,
-level shifts, and schema drift.
+dates, cadence gaps, file order, stale tails, flatline tails, saturation at a
+bound, negligible residue, level shifts, and schema drift.
+
+The observation date does not have to be a date column. Where it is spread
+across `year`, `month` and `dekad`, or across `year` and a label like
+`"END OF APR"`, it is assembled — otherwise five of the thirteen checks are
+withheld on a whole class of agricultural and government files.
 
 Precision is measured but never filed as a fault. A column where most values
 carry 15+ significant digits has been computed, not reported — that is
@@ -60,6 +65,14 @@ assay init data.csv               # write a manifest to answer its questions
 assay catalog                     # what the checks are and why
 assay audit data.csv --json       # the machine contract
 ```
+
+## Validation
+
+It was tested against 82 findings from a real pipeline audit, on the files as
+they stood *before* those findings were fixed, recovered from git — and on the
+same files afterwards. See [VALIDATION.md](VALIDATION.md), including the
+denominator (only ~30 of the 82 are visible in a data file at all) and the four
+families still out of reach.
 
 ## The report
 

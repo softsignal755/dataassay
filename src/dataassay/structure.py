@@ -34,6 +34,19 @@ _RUN_NAMES = ("run_date", "load_date", "ingested_at", "created_at", "fetched_at"
 MAX_GROUP_CARDINALITY = 200
 MAX_GROUP_COLUMNS = 4
 
+# Agricultural and government data very often spreads the observation date
+# across columns -- year + month + dekad, or year + "END OF APR" -- instead of
+# carrying a date. Treating those files as having no ordering costs five of the
+# eleven checks, and it is why a cold-storage file sorted ALPHABETICALLY by
+# month (APR, AUG, DEC, FEB, JAN...) could serve March as "latest" while April
+# existed: there was no axis to notice it against.
+_YEAR_NAMES = ("year", "yr", "crop_year", "harvest_year")
+_MONTH_NAMES = ("month", "mon", "mo", "month_no", "month_num")
+_DAY_NAMES = ("day", "dom", "day_of_month")
+_DEKAD_NAMES = ("dekad", "decad", "tenday")
+_MONTH_TOKENS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                 "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+
 
 @dataclass
 class Structure:
@@ -47,11 +60,20 @@ class Structure:
     candidates_exhausted: bool = False
     time_axis_declared: bool = False
     grain_declared: bool = False
+    time_parts: list[str] = field(default_factory=list)
+    time_sql: str = ""
     assumptions: list[str] = field(default_factory=list)
 
     @property
     def ordered(self) -> bool:
         return self.time_axis is not None
+
+    @property
+    def time_expr(self) -> str:
+        """SQL for the observation date, whether it is a column or assembled."""
+        if self.time_sql:
+            return self.time_sql
+        return q(self.time_axis) if self.time_axis else ""
 
     @property
     def partition(self) -> str:
@@ -71,6 +93,8 @@ class Structure:
             "duplicate_grain_rows": self.duplicate_grain_rows,
             "candidates_exhausted": self.candidates_exhausted,
             "time_axis_declared": self.time_axis_declared,
+            "time_parts": self.time_parts,
+            "time_sql": self.time_sql,
             "grain_declared": self.grain_declared,
             "assumptions": self.assumptions,
         }
@@ -118,6 +142,72 @@ def _pick_time_axis(cols: list[ColumnProfile], s: Structure) -> None:
     )
 
 
+def _month_case(col: str) -> str:
+    """Map a period label carrying a month name to a month number."""
+    whens = " ".join(
+        f"WHEN upper({q(col)}) LIKE '%{tok}%' THEN {i + 1}"
+        for i, tok in enumerate(_MONTH_TOKENS)
+    )
+    return f"CASE {whens} ELSE NULL END"
+
+
+def _pick_composite_axis(cols: list[ColumnProfile], s: Structure) -> None:
+    """Assemble a date from year + month (+ day or dekad), when one is spread out."""
+    by_name = {c.name.lower(): c for c in cols}
+
+    def numeric_named(names, lo, hi):
+        for n in names:
+            c = by_name.get(n)
+            if (c and c.kind == "numeric" and c.integral
+                    and c.min_value is not None and c.max_value is not None
+                    and lo <= float(c.min_value) and float(c.max_value) <= hi):
+                return c.name
+        return None
+
+    year = numeric_named(_YEAR_NAMES, 1800, 2200)
+    if not year:
+        return
+    month = numeric_named(_MONTH_NAMES, 1, 12)
+    month_sql, parts = None, [year]
+
+    if month:
+        month_sql, _ = q(month), parts.append(month)
+    else:
+        # A period label: "END OF APR", "MARCH", "Jan-2026".
+        for c in cols:
+            if c.kind != "text" or c.distinct > 40 or not c.top_values:
+                continue
+            sample = " ".join(str(v).upper() for v, _ in c.top_values)
+            if sum(tok in sample for tok in _MONTH_TOKENS) >= 2:
+                month_sql = _month_case(c.name)
+                parts.append(c.name)
+                break
+    if not month_sql:
+        return
+
+    day = numeric_named(_DAY_NAMES, 1, 31)
+    dekad = numeric_named(_DEKAD_NAMES, 1, 3)
+    if day:
+        parts.append(day)
+        expr = f"make_date({q(year)}, {month_sql}, {q(day)})"
+    elif dekad:
+        parts.append(dekad)
+        expr = (f"make_date({q(year)}, {month_sql}, 1) "
+                f"+ to_days((({q(dekad)} - 1) * 10)::INTEGER)")
+    else:
+        expr = f"make_date({q(year)}, {month_sql}, 1)"
+
+    s.time_axis = " + ".join(parts)
+    s.time_parts = parts
+    s.time_sql = expr
+    s.time_axis_basis = "assembled from " + ", ".join(repr(x) for x in parts)
+    s.assumptions.append(
+        "No date column, so the observation date was assembled from "
+        + ", ".join(repr(x) for x in parts)
+        + ". Ordering, gaps and level shifts are read against that."
+    )
+
+
 def _pick_grain(
     cols: list[ColumnProfile],
     con: duckdb.DuckDBPyConnection,
@@ -148,7 +238,7 @@ def _pick_grain(
     if s.time_axis:
         candidates = [
             c.name for c in cols
-            if c.name != s.time_axis
+            if c.name != s.time_axis and c.name not in s.time_parts
             and 1 < c.distinct <= MAX_GROUP_CARDINALITY
             # A grouping column repeats. One with a distinct value for nearly
             # every row is a surrogate key or a measurement, and bolting it on
@@ -167,7 +257,7 @@ def _pick_grain(
             ).fetchone()
             return int(n)
 
-        trial = [s.time_axis]
+        trial = list(s.time_parts) if s.time_parts else [s.time_axis]
         if distinct_of(trial) == rows:
             s.grain, s.grain_is_unique = trial, True
             return
@@ -248,7 +338,9 @@ def _apply_declared(s: Structure, manifest, cols, con, source, params, rows) -> 
         s.grain = list(grain)
         s.grain_declared = True
         s.candidates_exhausted = False
-        s.group_columns = [g for g in grain if g != s.time_axis]
+        s.group_columns = [
+            g for g in grain if g != s.time_axis and g not in s.time_parts
+        ]
         cols_sql = ", ".join(q(k) for k in grain)
         (distinct,) = con.execute(
             f"SELECT count(*) FROM (SELECT DISTINCT {cols_sql} FROM {source})", params
@@ -273,6 +365,8 @@ def infer(
 ) -> Structure:
     s = Structure()
     _pick_time_axis(cols, s)
+    if not s.time_axis:
+        _pick_composite_axis(cols, s)
     if manifest is not None and manifest.declared_value("time_axis"):
         _apply_declared(s, manifest, cols, con, source, params, rows)
     if rows and not s.grain_declared:

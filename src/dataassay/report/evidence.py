@@ -37,7 +37,7 @@ def locate_series(ctx, column: str, at: str):
     cols = ", ".join(q(c) for c in s.group_columns)
     rows = ctx.fetch(
         f"SELECT {cols} FROM {ctx.source} "
-        f"WHERE CAST({q(s.time_axis)} AS VARCHAR) = '{at}' "
+        f"WHERE CAST({s.time_expr} AS VARCHAR) = '{at}' "
         f"  AND {q(column)} IS NOT NULL LIMIT 1"
     )
     return rows[0] if rows else None
@@ -46,7 +46,7 @@ def locate_series(ctx, column: str, at: str):
 def series_around(ctx, column: str, at: str, group=None):
     """(points, flagged_index) for the window either side of a timestamp."""
     s = ctx.structure
-    axis, gwhere = q(s.time_axis), _where_group(s, group)
+    axis, gwhere = s.time_expr, _where_group(s, group)
     rows = ctx.fetch(
         f"WITH s AS (SELECT {axis} AS t, {q(column)} AS v FROM {ctx.source} "
         f"           WHERE {q(column)} IS NOT NULL{gwhere}), "
@@ -63,7 +63,7 @@ def series_around(ctx, column: str, at: str, group=None):
 
 def series_tail(ctx, column: str, n: int, group=None):
     s = ctx.structure
-    axis, gwhere = q(s.time_axis), _where_group(s, group)
+    axis, gwhere = s.time_expr, _where_group(s, group)
     rows = ctx.fetch(
         f"SELECT t, v FROM (SELECT {axis} AS t, {q(column)} AS v FROM {ctx.source} "
         f"  WHERE {q(column)} IS NOT NULL{gwhere} ORDER BY t DESC LIMIT {n}) "
@@ -122,8 +122,8 @@ def coverage_cells(ctx, cadence_days: int, group=None, focus: str | None = None)
     dates = [
         r[0]
         for r in ctx.fetch(
-            f"SELECT DISTINCT CAST({q(s.time_axis)} AS DATE) AS d "
-            f"FROM {ctx.source} WHERE {q(s.time_axis)} IS NOT NULL"
+            f"SELECT DISTINCT CAST({s.time_expr} AS DATE) AS d "
+            f"FROM {ctx.source} WHERE {s.time_expr} IS NOT NULL"
             + (f"{gwhere}" if gwhere else "")
             + " ORDER BY d"
         )

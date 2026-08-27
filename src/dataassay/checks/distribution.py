@@ -376,8 +376,8 @@ class LevelShift:
                     "columns_breaking_here": sorted(simultaneous),
                 },
                 predicate=(
-                    f"SELECT {q(ctx.structure.time_axis)}, {q(col.name)} "
-                    f"FROM <source> ORDER BY {q(ctx.structure.time_axis)} "
+                    f"SELECT {ctx.structure.time_expr}, {q(col.name)} "
+                    f"FROM <source> ORDER BY {ctx.structure.time_expr} "
                     f"-- inspect the {CONTEXT_WINDOW} rows either side of {t}"
                 ),
                 confidence=Confidence(level, inputs),
