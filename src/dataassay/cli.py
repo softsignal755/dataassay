@@ -198,7 +198,13 @@ def _cmd_audit(args: argparse.Namespace) -> int:
         print(f"assay: manifest: {exc}", file=sys.stderr)
         return 2
 
-    if args.json:
+    if args.report:
+        from dataassay import report as report_mod
+
+        html_path, csv_path = report_mod.build(result, path, Path(args.report))
+        print(f"Wrote {html_path}")
+        print(f"Wrote {csv_path}")
+    elif args.json:
         print(json.dumps(result.to_dict(), indent=2, default=str))
     else:
         print(_render_audit(result))
@@ -331,6 +337,10 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument(
         "--no-manifest", action="store_true",
         help="ignore any manifest and infer everything",
+    )
+    audit.add_argument(
+        "--report", metavar="OUT.html",
+        help="write a self-contained HTML report and a flagged-items CSV",
     )
     audit.add_argument(
         "--fail-on-finding",

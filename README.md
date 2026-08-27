@@ -18,9 +18,9 @@ report next to what did run.
 
 ## Status
 
-**v0.2.0 — the check catalog.** `assay profile` characterizes; `assay audit`
-characterizes and then checks; `assay catalog` prints what it knows how to look
-for. The HTML report is not here yet.
+**v0.2.0 — the check catalog.** `assay audit --report out.html` writes a
+self-contained report and a flagged-items CSV. `assay profile` characterizes;
+`assay catalog` prints what the checks are; `assay init` writes a manifest.
 
 Eleven checks, each earned by a real defect found in a production pipeline:
 constant/all-zero columns, mojibake, duplicate rows, duplicate grain, future
@@ -60,6 +60,24 @@ assay init data.csv               # write a manifest to answer its questions
 assay catalog                     # what the checks are and why
 assay audit data.csv --json       # the machine contract
 ```
+
+## The report
+
+One HTML file. No CDN, no external request, no dependency — charts are inline
+SVG drawn by hand, and the machine-readable findings are embedded in the page
+rather than written beside it, so the human artifact and the machine contract
+are the same bytes and cannot drift.
+
+Ordered the way it has to be read: provenance, then **coverage before the
+findings** (an empty findings list means nothing until you know how many checks
+ran), then the findings — each with its governing property, one chart, the
+composition of its confidence, and the predicate to re-run it without this code
+— then what each column was taken to be, where a wrong assumption of ours is
+visible, then every check including the ones that passed.
+
+Charts are theme-aware and never lean on colour alone: a flagged point carries
+a rule and a direct label, a flagged range is a band with one label, and any
+chart with two categories carries a legend.
 
 ## The manifest
 
