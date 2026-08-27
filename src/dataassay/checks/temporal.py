@@ -80,7 +80,10 @@ class FutureDates:
         if not count:
             return []
 
-        has_flag = [
+        declared_flag = (
+            ctx.manifest.declared_value("forecast_column") if ctx.manifest else None
+        )
+        has_flag = [declared_flag] if declared_flag else [
             c.name for c in ctx.profile.columns
             if c.name.lower() in FORECAST_FLAG_NAMES
         ]

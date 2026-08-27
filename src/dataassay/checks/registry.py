@@ -15,13 +15,15 @@ from dataassay.checks.structural import (
     DuplicateGrain,
     DuplicateRows,
     Mojibake,
+    SchemaDrift,
 )
 from dataassay.checks.temporal import CadenceGap, FlatlineTail, FutureDates
 
-CATALOG_VERSION = "2026.08.3"
+CATALOG_VERSION = "2026.08.4"
 
 CATALOG: list[Check] = [
     ConstantNumericColumn(),
+    SchemaDrift(),
     Mojibake(),
     DuplicateRows(),
     DuplicateGrain(),

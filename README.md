@@ -22,10 +22,10 @@ report next to what did run.
 characterizes and then checks; `assay catalog` prints what it knows how to look
 for. The HTML report is not here yet.
 
-Ten checks, each earned by a real defect found in a production pipeline:
+Eleven checks, each earned by a real defect found in a production pipeline:
 constant/all-zero columns, mojibake, duplicate rows, duplicate grain, future
 dates, cadence gaps, flatline tails, saturation at a bound, negligible residue,
-and level shifts.
+level shifts, and schema drift.
 
 Precision is measured but never filed as a fault. A column where most values
 carry 15+ significant digits has been computed, not reported — that is
@@ -56,9 +56,26 @@ pip install dataassay
 ```
 assay audit data.parquet          # characterize, then check
 assay profile data.csv            # characterize only
+assay init data.csv               # write a manifest to answer its questions
 assay catalog                     # what the checks are and why
 assay audit data.csv --json       # the machine contract
 ```
+
+## The manifest
+
+`assay init` writes `<file>.assay.json`: what the tool detected, the questions
+it could not answer, and an empty `declared` block for you to fill in.
+
+The two blocks are kept apart on purpose. `detected` is regenerated every time
+and is only there for reference; `declared` is what a person says is true, and
+it always wins. So a value's provenance is never ambiguous — there is no
+guessing later whether a grain was inferred or confirmed, and the report can be
+honest about which checks rest on an assumption and which rest on an answer.
+
+Answering once is what makes the tool usable more than once. The next audit of
+the same dataset asks nothing, and it can run where there is nobody to ask at
+all — a pipeline, a server, CI. The conversation is just the most convenient
+way to author the file the first time.
 
 ## Privacy
 

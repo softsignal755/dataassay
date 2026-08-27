@@ -13,6 +13,7 @@ from pathlib import Path
 
 from dataassay import __version__
 from dataassay import audit as audit_mod
+from dataassay import manifest as manifest_mod
 from dataassay.checks.base import DEFECT, SUSPECT
 from dataassay.checks.registry import CATALOG_VERSION, catalog_dict
 from dataassay.profile import LIMITATION, OBSERVATION, QUESTION, Profile, build
@@ -127,13 +128,16 @@ def _render_audit(a: audit_mod.Audit, width: int = 88) -> str:
         f"  rows        {p.row_count:,}   columns  {p.column_count}",
         f"  catalog     {a.catalog_version}",
     ]
+    if a.manifest_path:
+        out.append(f"  manifest    {Path(a.manifest_path).name}")
     if s.time_axis:
         out.append(f"  time axis   {s.time_axis}  ({s.time_axis_basis})")
     if s.grain:
         unique = "unique" if s.grain_is_unique else (
             f"NOT unique — {s.duplicate_grain_rows:,} excess row(s)"
         )
-        out.append(f"  grain       {' × '.join(s.grain)}  ({unique})")
+        how = "declared" if s.grain_declared else "inferred"
+        out.append(f"  grain       {' × '.join(s.grain)}  ({how}, {unique})")
     out.append("")
 
     if a.findings:
@@ -182,9 +186,16 @@ def _cmd_audit(args: argparse.Namespace) -> int:
         print(f"assay: no such file: {path}", file=sys.stderr)
         return 2
     try:
-        result = audit_mod.run(path)
+        result = audit_mod.run(
+            path,
+            manifest_path=Path(args.manifest) if args.manifest else None,
+            use_manifest=not args.no_manifest,
+        )
     except UnsupportedFormat as exc:
         print(f"assay: {exc}", file=sys.stderr)
+        return 2
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"assay: manifest: {exc}", file=sys.stderr)
         return 2
 
     if args.json:
@@ -194,6 +205,44 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
     if args.fail_on_finding and any(f.disposition == DEFECT for f in result.findings):
         return 1
+    return 0
+
+
+def _cmd_init(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    if not path.is_file():
+        print(f"assay: no such file: {path}", file=sys.stderr)
+        return 2
+    target = Path(args.output) if args.output else manifest_mod.path_for(path)
+    if target.exists() and not args.force:
+        print(
+            f"assay: {target.name} already exists. Editing it is the point — "
+            "pass --force only if you mean to discard what is in it.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        result = audit_mod.run(path, use_manifest=False)
+    except UnsupportedFormat as exc:
+        print(f"assay: {exc}", file=sys.stderr)
+        return 2
+
+    m = manifest_mod.from_audit(result.profile, result.structure)
+    m.write(target)
+    print(f"Wrote {target}")
+    print(f"  {len(m.schema_columns)} column(s) recorded")
+    if m.detected.get("time_axis"):
+        print(f"  detected time axis: {m.detected['time_axis']}")
+    if m.detected.get("grain"):
+        print(
+            f"  detected grain: {' × '.join(m.detected['grain'])}"
+            + ("" if m.detected.get("grain_is_unique") else "  (NOT unique)")
+        )
+    if m.questions:
+        print(f"  {len(m.questions)} open question(s) recorded for you to answer")
+    print("\nEdit the 'declared' block to answer them. Declared values override "
+          "detected ones, and\nthe next audit will use them without asking.")
     return 0
 
 
@@ -276,11 +325,37 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("path", help="CSV or Parquet file")
     audit.add_argument("--json", action="store_true", help="emit the machine contract")
     audit.add_argument(
+        "--manifest", metavar="PATH",
+        help="use this manifest instead of looking for <file>.assay.json",
+    )
+    audit.add_argument(
+        "--no-manifest", action="store_true",
+        help="ignore any manifest and infer everything",
+    )
+    audit.add_argument(
         "--fail-on-finding",
         action="store_true",
         help="exit 1 if any likely defect was found (for pipelines)",
     )
     audit.set_defaults(func=_cmd_audit)
+
+    init = sub.add_parser(
+        "init",
+        help="write a manifest recording what this dataset is",
+        description=(
+            "Writes <file>.assay.json: what the tool detected, the questions it "
+            "could not answer, and an empty 'declared' block for you to fill in. "
+            "Declared values override detected ones, so the next audit — and "
+            "every audit after it, anywhere, with nobody present — uses your "
+            "answers instead of guessing."
+        ),
+    )
+    init.add_argument("path", help="CSV or Parquet file")
+    init.add_argument("-o", "--output", metavar="PATH", help="write here instead")
+    init.add_argument(
+        "--force", action="store_true", help="overwrite an existing manifest"
+    )
+    init.set_defaults(func=_cmd_init)
 
     catalog = sub.add_parser(
         "catalog",

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import duckdb
 
+from dataassay import manifest as manifest_mod
 from dataassay import structure as structure_mod
 from dataassay.checks.base import Confidence, Finding
 from dataassay.checks.registry import CATALOG, CATALOG_VERSION
@@ -47,6 +48,7 @@ class Audit:
     findings: list[Finding]
     coverage: Coverage
     catalog_version: str = CATALOG_VERSION
+    manifest_path: str | None = None
 
     def to_dict(self) -> dict:
         d = self.profile.to_dict()
@@ -54,6 +56,7 @@ class Audit:
             "catalog_version": self.catalog_version,
             "structure": self.structure.to_dict(),
             "coverage": self.coverage.to_dict(),
+            "manifest": self.manifest_path,
             "findings": [f.to_dict() for f in self.findings],
         }
         return d
@@ -90,7 +93,12 @@ def _corroborate(findings: list[Finding]) -> list[Finding]:
     return out
 
 
-def run(path: Path, byte_cap: int | None = None) -> Audit:
+def run(
+    path: Path,
+    byte_cap: int | None = None,
+    manifest_path: Path | None = None,
+    use_manifest: bool = True,
+) -> Audit:
     from dataassay.checks.base import CheckContext
     from dataassay.rawscan import BYTE_CAP
 
@@ -100,11 +108,16 @@ def run(path: Path, byte_cap: int | None = None) -> Audit:
         profile = build(path, byte_cap=byte_cap or BYTE_CAP, con=con)
         source = source_expr(reader, profile.provenance.lenient)
         params = [str(path)]
+        manifest = (
+            manifest_mod.discover(path, manifest_path) if use_manifest else None
+        )
         struct = structure_mod.infer(
-            profile.columns, con, source, params, profile.provenance.row_count
+            profile.columns, con, source, params, profile.provenance.row_count,
+            manifest=manifest,
         )
         ctx = CheckContext(
-            profile=profile, structure=struct, con=con, source=source, params=params
+            profile=profile, structure=struct, con=con, source=source,
+            params=params, manifest=manifest,
         )
 
         coverage = Coverage()
@@ -125,7 +138,10 @@ def run(path: Path, byte_cap: int | None = None) -> Audit:
     findings = _corroborate(findings)
     findings.sort(key=lambda f: f.sort_key)
     return Audit(
-        profile=profile, structure=struct, findings=findings, coverage=coverage
+        profile=profile, structure=struct, findings=findings, coverage=coverage,
+        manifest_path=(
+            str(manifest.source_path) if manifest and manifest.source_path else None
+        ),
     )
 
 

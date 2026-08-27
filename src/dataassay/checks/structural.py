@@ -254,6 +254,9 @@ class DuplicateGrain:
                 "call a duplicate. What combination of columns should make a "
                 "row unique?"
             )
+        if s.grain_declared:
+            # The manifest answered the question this check used to have to ask.
+            return Applicability.yes()
         if s.candidates_exhausted:
             # We did not find the key. Saying "you have duplicates" here would
             # be reporting our own ignorance as the data's defect.
@@ -292,7 +295,11 @@ class DuplicateGrain:
             f"HAVING count(*) > 1 ORDER BY n DESC LIMIT 5"
         )
         disposition = DEFECT if conflicting else SUSPECT
-        inputs = [f"grain {s.grain} inferred, not declared"]
+        inputs = [
+            f"grain {s.grain} "
+            + ("declared in the manifest" if s.grain_declared
+               else "inferred, not declared")
+        ]
         if conflicting:
             inputs.append(
                 f"{conflicting:,} key(s) carry rows that DISAGREE on their "
@@ -316,6 +323,7 @@ class DuplicateGrain:
             ),
             evidence={
                 "grain": s.grain,
+                "grain_declared": s.grain_declared,
                 "excess_rows": s.duplicate_grain_rows,
                 "conflicting_keys": conflicting,
                 "examples": [[str(v) for v in row] for row in examples],
@@ -326,4 +334,67 @@ class DuplicateGrain:
             ),
             confidence=Confidence(HIGH if conflicting else MEDIUM, inputs),
             raw_values=True,
+        )]
+
+
+class SchemaDrift:
+    spec = CheckSpec(
+        id="schema_drift",
+        name="Columns have appeared or vanished since the manifest",
+        detects="A file whose shape no longer matches what was audited before.",
+        gate="A manifest recording the columns this dataset used to have.",
+        default_disposition=DEFECT,
+        not_the_obvious=(
+            "Nothing inside a single file can detect this. A dropped column "
+            "leaves no trace in the file that no longer has it — the audit "
+            "simply stops mentioning it, and silence reads exactly like "
+            "success. It takes a record of what was there before, which is the "
+            "one thing a manifest can supply and a file cannot."
+        ),
+        traces_to=(
+            "The class where a renamed upstream column disappears from a feed "
+            "and every consumer keeps running on the columns that remain."
+        ),
+    )
+
+    def applies(self, ctx: CheckContext) -> Applicability:
+        if ctx.manifest is None:
+            return Applicability.no(
+                "no manifest, so there is no record of what this file used to "
+                "look like — run `assay init` to create one"
+            )
+        if not ctx.manifest.schema_columns:
+            return Applicability.no("the manifest records no column list")
+        return Applicability.yes()
+
+    def run(self, ctx: CheckContext) -> list[Finding]:
+        from dataassay.manifest import schema_drift
+
+        names = [c.name for c in ctx.profile.columns]
+        added, removed = schema_drift(ctx.manifest, names)
+        if not (added or removed):
+            return []
+
+        parts = []
+        if removed:
+            parts.append(f"{len(removed)} column(s) are gone: " + ", ".join(removed))
+        if added:
+            parts.append(f"{len(added)} are new: " + ", ".join(added))
+        return [Finding(
+            check_id=self.spec.id,
+            column=None,
+            disposition=DEFECT if removed else SUSPECT,
+            summary=(
+                "The file no longer has the shape the manifest was written "
+                "against. " + "; ".join(parts) + "."
+                + (" A consumer reading a vanished column gets nothing, and "
+                   "nothing is not an error." if removed else "")
+            ),
+            evidence={"added": added, "removed": removed,
+                      "manifest_columns": ctx.manifest.schema_columns},
+            predicate="DESCRIBE SELECT * FROM <source>",
+            confidence=Confidence(HIGH, [
+                f"compared against {len(ctx.manifest.schema_columns)} column(s) "
+                "recorded in the manifest",
+            ]),
         )]

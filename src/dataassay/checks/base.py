@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     import duckdb
 
     from dataassay.columns import ColumnProfile
+    from dataassay.manifest import Manifest
     from dataassay.profile import Profile
     from dataassay.structure import Structure
 
@@ -175,6 +176,7 @@ class CheckContext:
     con: duckdb.DuckDBPyConnection
     source: str
     params: list[str]
+    manifest: Manifest | None = None
 
     def columns(self, kind: str | None = None) -> list[ColumnProfile]:
         cols = self.profile.columns

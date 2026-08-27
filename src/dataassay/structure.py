@@ -45,6 +45,8 @@ class Structure:
     grain_is_unique: bool | None = None
     duplicate_grain_rows: int = 0
     candidates_exhausted: bool = False
+    time_axis_declared: bool = False
+    grain_declared: bool = False
     assumptions: list[str] = field(default_factory=list)
 
     @property
@@ -68,6 +70,8 @@ class Structure:
             "grain_is_unique": self.grain_is_unique,
             "duplicate_grain_rows": self.duplicate_grain_rows,
             "candidates_exhausted": self.candidates_exhausted,
+            "time_axis_declared": self.time_axis_declared,
+            "grain_declared": self.grain_declared,
             "assumptions": self.assumptions,
         }
 
@@ -204,17 +208,70 @@ def _pick_grain(
         )
 
 
+def _apply_declared(s: Structure, manifest, cols, con, source, params, rows) -> None:
+    """A declared value replaces an inference and says so.
+
+    This is the point of the manifest: a grain nobody could infer becomes a
+    grain the checks can use, and a duplicate check that could only ask a
+    question can now answer one.
+    """
+    names = {c.name for c in cols}
+
+    axis = manifest.declared_value("time_axis")
+    if axis:
+        if axis not in names:
+            s.assumptions.append(
+                f"Manifest declares time_axis {axis!r}, which is not a column "
+                "in this file; ignored."
+            )
+        else:
+            s.time_axis = axis
+            s.time_axis_basis = "declared in the manifest"
+            s.time_axis_declared = True
+
+    grain = manifest.declared_value("grain")
+    if grain:
+        missing = [g for g in grain if g not in names]
+        if missing:
+            s.assumptions.append(
+                f"Manifest declares a grain naming {', '.join(missing)}, which "
+                "this file does not have; ignored."
+            )
+            return
+        s.grain = list(grain)
+        s.grain_declared = True
+        s.candidates_exhausted = False
+        s.group_columns = [g for g in grain if g != s.time_axis]
+        cols_sql = ", ".join(q(k) for k in grain)
+        (distinct,) = con.execute(
+            f"SELECT count(*) FROM (SELECT DISTINCT {cols_sql} FROM {source})", params
+        ).fetchone()
+        s.grain_is_unique = int(distinct) == rows
+        if not s.grain_is_unique:
+            (dupes,) = con.execute(
+                f"SELECT coalesce(sum(n - 1), 0) FROM (SELECT count(*) n FROM "
+                f"{source} GROUP BY {cols_sql} HAVING count(*) > 1)",
+                params,
+            ).fetchone()
+            s.duplicate_grain_rows = int(dupes)
+
+
 def infer(
     cols: list[ColumnProfile],
     con: duckdb.DuckDBPyConnection,
     source: str,
     params: list[str],
     rows: int,
+    manifest=None,
 ) -> Structure:
     s = Structure()
     _pick_time_axis(cols, s)
-    if rows:
+    if manifest is not None and manifest.declared_value("time_axis"):
+        _apply_declared(s, manifest, cols, con, source, params, rows)
+    if rows and not s.grain_declared:
         _pick_grain(cols, con, source, params, rows, s)
+    if manifest is not None and manifest.declared_value("grain"):
+        _apply_declared(s, manifest, cols, con, source, params, rows)
     if s.group_columns:
         s.assumptions.append(
             "Treated " + ", ".join(repr(c) for c in s.group_columns)
