@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataassay.checks.base import Check
 from dataassay.checks.distribution import LevelShift, SaturationAtBound
+from dataassay.checks.precision import NegligibleResidue
 from dataassay.checks.structural import (
     ConstantNumericColumn,
     DuplicateGrain,
@@ -17,7 +18,7 @@ from dataassay.checks.structural import (
 )
 from dataassay.checks.temporal import CadenceGap, FlatlineTail, FutureDates
 
-CATALOG_VERSION = "2026.08.2"
+CATALOG_VERSION = "2026.08.3"
 
 CATALOG: list[Check] = [
     ConstantNumericColumn(),
@@ -28,6 +29,7 @@ CATALOG: list[Check] = [
     CadenceGap(),
     FlatlineTail(),
     SaturationAtBound(),
+    NegligibleResidue(),
     LevelShift(),
 ]
 

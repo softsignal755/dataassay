@@ -40,6 +40,15 @@ TOPK_LIMIT = 10
 HEAVY_TAIL_RATIO = 2.0
 MIN_N_FOR_SIGMA = 30
 
+# A double carries ~15-17 significant decimal digits. No instrument, survey, or
+# agency reports a measurement to 15 -- so a value with that many did not come
+# from a source, it came from arithmetic. DuckDB renders a double with the
+# shortest representation that round-trips, which makes this measurable: 0.1
+# prints as "0.1", while a value that has been through a computation prints its
+# full tail.
+SIG_DIGITS_DERIVED = 15
+DERIVED_SHARE = 0.05
+
 # Any column of counts or prices satisfies 0 <= x <= 100 somewhere, so the
 # range alone is not worth a question. The name is weak evidence, but it is
 # the only evidence available before the interview -- so it decides whether
@@ -87,6 +96,9 @@ class ColumnProfile:
     sigma_ratio: float | None = None
     zeros: int | None = None
     negatives: int | None = None
+    max_sig_digits: int | None = None
+    median_sig_digits: float | None = None
+    high_precision: int | None = None
     integral: bool | None = None
     min_value: Any = None
     max_value: Any = None
@@ -142,6 +154,19 @@ class ColumnProfile:
                         "consistent with a percentage"
                         + (", and the name says so" if named
                            else "; nothing but the range suggests it"))
+
+            # Not a fault: a signal about where the column came from. A source
+            # does not report 15 significant digits, so a column full of them
+            # has been computed -- which matters when deciding whether it is
+            # evidence or a derivation of evidence.
+            if self.high_precision and self.non_null:
+                share = self.high_precision / self.non_null
+                if share >= DERIVED_SHARE:
+                    add("derived_precision", True,
+                        f"{share:.0%} of values carry {SIG_DIGITS_DERIVED}+ "
+                        f"significant digits (max {self.max_sig_digits}); no "
+                        "source reports that, so this column is computed rather "
+                        "than reported")
 
             # The gate the whole outlier family hangs on.
             if self.non_null < MIN_N_FOR_SIGMA:
@@ -201,6 +226,9 @@ class ColumnProfile:
                 "zeros": self.zeros,
                 "negatives": self.negatives,
                 "integral": self.integral,
+                "max_sig_digits": self.max_sig_digits,
+                "median_sig_digits": self.median_sig_digits,
+                "high_precision": self.high_precision,
                 "quantiles": self.quantiles,
                 "sentinel_candidates": self.sentinel_candidates,
             }
@@ -229,8 +257,17 @@ def _aggregate_sql(name: str, kind: str, exact_distinct: bool) -> list[tuple[str
         ("max", f"max({c})"),
     ]
     if kind == "numeric":
+        # Significant digits of the shortest round-tripping representation:
+        # drop the exponent, keep the digits, drop leading zeros.
+        sig = (
+            f"length(ltrim(regexp_replace(regexp_replace("
+            f"CAST({c} AS VARCHAR), '[eE].*$', ''), '[^0-9]', '', 'g'), '0'))"
+        )
         parts += [
             ("mean", f"avg({c})"),
+            ("sigmax", f"max({sig})"),
+            ("sigmed", f"quantile_cont({sig}, 0.5)"),
+            ("sighigh", f"count(*) FILTER (WHERE {sig} >= {SIG_DIGITS_DERIVED})"),
             ("stddev", f"stddev_samp({c})"),
             ("quantiles", f"quantile_cont({c}, {QUANTILES})"),
             ("zeros", f"count(*) FILTER (WHERE {c} = 0)"),
@@ -306,6 +343,9 @@ def profile_columns(
                 }
             p.zeros = int(g("zeros") or 0)
             p.negatives = int(g("negatives") or 0)
+            p.max_sig_digits = _int_or_none(g("sigmax"))
+            p.median_sig_digits = _f(g("sigmed"))
+            p.high_precision = int(g("sighigh") or 0)
             p.integral = g("integral")
             iqr_hi, iqr_lo = p.quantiles.get("0.75"), p.quantiles.get("0.25")
             if iqr_hi is not None and iqr_lo is not None:

@@ -22,9 +22,14 @@ report next to what did run.
 characterizes and then checks; `assay catalog` prints what it knows how to look
 for. The HTML report is not here yet.
 
-Nine checks, each earned by a real defect found in a production pipeline:
+Ten checks, each earned by a real defect found in a production pipeline:
 constant/all-zero columns, mojibake, duplicate rows, duplicate grain, future
-dates, cadence gaps, flatline tails, saturation at a bound, and level shifts.
+dates, cadence gaps, flatline tails, saturation at a bound, negligible residue,
+and level shifts.
+
+Precision is measured but never filed as a fault. A column where most values
+carry 15+ significant digits has been computed, not reported — that is
+provenance, and it belongs beside the column rather than in the findings.
 
 Every check declares the properties it needs and is refused when the profile
 has not established them. What was withheld and why travels beside the
