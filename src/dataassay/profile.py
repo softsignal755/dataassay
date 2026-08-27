@@ -20,7 +20,7 @@ import duckdb
 
 from dataassay import columns as columns_mod
 from dataassay import rawscan as rawscan_mod
-from dataassay.provenance import Provenance, describe, reader_for
+from dataassay.provenance import Provenance, describe, reader_for, source_expr
 
 # Note severities. `question` is the interview queue: an answer changes which
 # checks are valid, so it is worth a user's attention. `limitation` disables
@@ -323,7 +323,11 @@ def _column_notes(
     return notes
 
 
-def build(path: Path, byte_cap: int = rawscan_mod.BYTE_CAP) -> Profile:
+def build(
+    path: Path,
+    byte_cap: int = rawscan_mod.BYTE_CAP,
+    con: duckdb.DuckDBPyConnection | None = None,
+) -> Profile:
     prov = describe(path)
     reader = reader_for(path)
 
@@ -332,26 +336,42 @@ def build(path: Path, byte_cap: int = rawscan_mod.BYTE_CAP) -> Profile:
     # evidence for whether that commitment was right is gone.
     scan = rawscan_mod.scan(path, reader, byte_cap=byte_cap)
 
-    con = duckdb.connect(":memory:")
+    # A caller running checks afterwards passes its own connection so the
+    # file is opened once for the whole audit.
+    owned = con is None
+    con = con or duckdb.connect(":memory:")
     try:
-        source = f"{reader}(?)"
+        source = source_expr(reader, prov.lenient)
         params = [str(path)]
         schema = [(c.name, c.declared_type) for c in prov.columns]
         cols = columns_mod.profile_columns(con, source, params, schema, prov.row_count)
         block_notes, explained = _comissing_notes(con, source, params, cols)
     finally:
-        con.close()
+        if owned:
+            con.close()
 
     notes = _raw_notes(scan) + block_notes + _column_notes(cols, explained)
 
     if (scan.applicable and not scan.truncated and not scan.ragged_rows
             and scan.data_rows != prov.row_count):
-        notes.append(Note(
-            QUESTION, "row_count_mismatch", None,
-            f"The raw pass counted {scan.data_rows:,} data rows but the "
-            f"parser returned {prov.row_count:,}. The two disagree about "
-            "where rows begin and end.",
-            {"raw_rows": scan.data_rows, "parsed_rows": prov.row_count},
-        ))
+        rejected = scan.data_rows - prov.row_count
+        if prov.lenient and rejected > 0:
+            notes.append(Note(
+                QUESTION, "rows_rejected_by_parser", None,
+                f"{rejected:,} row(s) could not be parsed and were skipped to "
+                f"read the file at all; {prov.row_count:,} of "
+                f"{scan.data_rows:,} were kept. Everything below describes the "
+                "rows that parsed — the skipped ones are unexamined.",
+                {"rejected": rejected, "parsed": prov.row_count,
+                 "raw_rows": scan.data_rows},
+            ))
+        else:
+            notes.append(Note(
+                QUESTION, "row_count_mismatch", None,
+                f"The raw pass counted {scan.data_rows:,} data rows but the "
+                f"parser returned {prov.row_count:,}. The two disagree about "
+                "where rows begin and end.",
+                {"raw_rows": scan.data_rows, "parsed_rows": prov.row_count},
+            ))
 
     return Profile(provenance=prov, rawscan=scan, columns=cols, notes=notes)

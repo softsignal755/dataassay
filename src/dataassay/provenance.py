@@ -59,6 +59,13 @@ class Column:
     declared_type: str
 
 
+def source_expr(reader: str, lenient: bool = False) -> str:
+    """The table function to read this file with, as a bindable expression."""
+    if lenient and reader == "read_csv":
+        return "read_csv(?, ignore_errors=true)"
+    return f"{reader}(?)"
+
+
 @dataclass(frozen=True)
 class Provenance:
     path: str
@@ -71,6 +78,9 @@ class Provenance:
     audited_at: str
     tool: str
     tool_version: str
+    # True when a strict read failed and rows had to be skipped to proceed. A
+    # file that cannot be parsed is a finding, not a crash.
+    lenient: bool = False
 
     @property
     def column_count(self) -> int:
@@ -90,11 +100,24 @@ def describe(path: Path) -> Provenance:
     """
     reader = reader_for(path)
     con = duckdb.connect(":memory:")
+    lenient = False
     try:
-        src = f"{reader}(?)"
-        described = con.execute(f"DESCRIBE SELECT * FROM {src}", [str(path)]).fetchall()
+        for attempt_lenient in (False, True):
+            src = source_expr(reader, attempt_lenient)
+            try:
+                described = con.execute(
+                    f"DESCRIBE SELECT * FROM {src}", [str(path)]
+                ).fetchall()
+                (row_count,) = con.execute(
+                    f"SELECT count(*) FROM {src}", [str(path)]
+                ).fetchone()
+            except duckdb.InvalidInputException:
+                if attempt_lenient or reader != "read_csv":
+                    raise
+                continue
+            lenient = attempt_lenient
+            break
         columns = [Column(name=row[0], declared_type=row[1]) for row in described]
-        (row_count,) = con.execute(f"SELECT count(*) FROM {src}", [str(path)]).fetchone()
     finally:
         con.close()
 
@@ -109,4 +132,5 @@ def describe(path: Path) -> Provenance:
         audited_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         tool="dataassay",
         tool_version=__version__,
+        lenient=lenient,
     )

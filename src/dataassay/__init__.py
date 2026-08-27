@@ -6,6 +6,6 @@ the checks that property makes valid, and report what could NOT be checked as
 plainly as what failed.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["__version__"]

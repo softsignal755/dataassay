@@ -12,6 +12,9 @@ import sys
 from pathlib import Path
 
 from dataassay import __version__
+from dataassay import audit as audit_mod
+from dataassay.checks.base import DEFECT, SUSPECT
+from dataassay.checks.registry import CATALOG_VERSION, catalog_dict
 from dataassay.profile import LIMITATION, OBSERVATION, QUESTION, Profile, build
 from dataassay.provenance import UnsupportedFormat
 
@@ -19,6 +22,12 @@ _SEVERITY_LABEL = {
     QUESTION: "Needs your answer",
     LIMITATION: "Cannot be checked",
     OBSERVATION: "Noted",
+}
+
+_DISPOSITION_LABEL = {
+    DEFECT: "Likely defects",
+    SUSPECT: "Worth a look",
+    "bookkeeping": "The source doing its own bookkeeping",
 }
 
 
@@ -109,6 +118,104 @@ def _render(profile: Profile, width: int = 88) -> str:
     return "\n".join(out)
 
 
+
+def _render_audit(a: audit_mod.Audit, width: int = 88) -> str:
+    p, s = a.profile.provenance, a.structure
+    out = [
+        f"{p.filename}  ({_human_bytes(p.size_bytes)}, via {p.reader})",
+        f"  sha256      {p.content_sha256[:16]}…",
+        f"  rows        {p.row_count:,}   columns  {p.column_count}",
+        f"  catalog     {a.catalog_version}",
+    ]
+    if s.time_axis:
+        out.append(f"  time axis   {s.time_axis}  ({s.time_axis_basis})")
+    if s.grain:
+        unique = "unique" if s.grain_is_unique else (
+            f"NOT unique — {s.duplicate_grain_rows:,} excess row(s)"
+        )
+        out.append(f"  grain       {' × '.join(s.grain)}  ({unique})")
+    out.append("")
+
+    if a.findings:
+        for disposition in (DEFECT, SUSPECT, "bookkeeping"):
+            group = [f for f in a.findings if f.disposition == disposition]
+            if not group:
+                continue
+            out.append(f"  {_DISPOSITION_LABEL[disposition].upper()}  ({len(group)})")
+            for f in group:
+                where = f"{f.column}: " if f.column else ""
+                out += _wrap(f"• {where}{f.summary}", width, "    ")
+                out += _wrap(
+                    f"[{f.confidence.level}] " + "; ".join(f.confidence.inputs),
+                    width, "      ",
+                )
+                out.append("")
+    else:
+        out += ["  No findings.", ""]
+
+    cov = a.coverage
+    out.append(
+        f"  COVERAGE  {len(cov.ran)} of {cov.total} checks ran"
+        + (f", {len(cov.withheld)} withheld" if cov.withheld else "")
+        + (f", {len(cov.blocked)} waiting on an answer" if cov.blocked else "")
+    )
+    for cid, reason in cov.withheld:
+        out += _wrap(f"– {cid}: {reason}", width, "    ")
+    for cid, question in cov.blocked:
+        out += _wrap(f"? {cid}: {question}", width, "    ")
+
+    if a.profile.questions:
+        out.append("")
+        out.append(f"  PROFILE QUESTIONS  ({len(a.profile.questions)})")
+        for n in a.profile.questions:
+            where = f"{n.column}: " if n.column else ""
+            out += _wrap(f"• {where}{n.message}", width, "    ")
+
+    for note in s.assumptions:
+        out += _wrap(f"~ {note}", width, "    ")
+    return "\n".join(out)
+
+
+def _cmd_audit(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    if not path.is_file():
+        print(f"assay: no such file: {path}", file=sys.stderr)
+        return 2
+    try:
+        result = audit_mod.run(path)
+    except UnsupportedFormat as exc:
+        print(f"assay: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, default=str))
+    else:
+        print(_render_audit(result))
+
+    if args.fail_on_finding and any(f.disposition == DEFECT for f in result.findings):
+        return 1
+    return 0
+
+
+def _cmd_catalog(args: argparse.Namespace) -> int:
+    cat = catalog_dict()
+    if args.json:
+        print(json.dumps(cat, indent=2))
+        return 0
+    print(f"dataassay check catalog {cat['catalog_version']}\n")
+    for spec in cat["checks"]:
+        print(f"  {spec['id']}  —  {spec['name']}")
+        for label, key in (("detects", "detects"), ("gate", "gate"),
+                           ("not the obvious check", "not_the_obvious"),
+                           ("earned by", "traces_to")):
+            if spec[key]:
+                for para in spec[key].split("\n\n"):
+                    print("\n".join(_wrap(f"{label}: {para}", 88, "      ")))
+                    label = " " * len(label)
+        print()
+    return 0
+
+
 def _cmd_profile(args: argparse.Namespace) -> int:
     path = Path(args.path)
     if not path.is_file():
@@ -156,6 +263,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="exit 1 if anything needs a human answer (for pipelines)",
     )
     profile.set_defaults(func=_cmd_profile)
+
+    audit = sub.add_parser(
+        "audit",
+        help="characterize, then run every check the properties make valid",
+        description=(
+            "Profiles the file, infers its structure, runs only the checks its "
+            "established properties make valid, and reports what was withheld "
+            "alongside what was found."
+        ),
+    )
+    audit.add_argument("path", help="CSV or Parquet file")
+    audit.add_argument("--json", action="store_true", help="emit the machine contract")
+    audit.add_argument(
+        "--fail-on-finding",
+        action="store_true",
+        help="exit 1 if any likely defect was found (for pipelines)",
+    )
+    audit.set_defaults(func=_cmd_audit)
+
+    catalog = sub.add_parser(
+        "catalog",
+        help="print the check catalog",
+        description=(
+            f"The checks this version knows about (catalog {CATALOG_VERSION}). "
+            "Each entry records what it detects, what property gates it, and "
+            "where a more obvious detector fails."
+        ),
+    )
+    catalog.add_argument("--json", action="store_true")
+    catalog.set_defaults(func=_cmd_catalog)
 
     return parser
 

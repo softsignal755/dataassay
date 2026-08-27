@@ -18,30 +18,27 @@ report next to what did run.
 
 ## Status
 
-**v0.1.0 — the profiler.** Characterization only. The check catalog and the
-HTML report are not here yet.
+**v0.2.0 — the check catalog.** `assay profile` characterizes; `assay audit`
+characterizes and then checks; `assay catalog` prints what it knows how to look
+for. The HTML report is not here yet.
 
-`assay profile` reports:
+Nine checks, each earned by a real defect found in a production pipeline:
+constant/all-zero columns, mojibake, duplicate rows, duplicate grain, future
+dates, cadence gaps, flatline tails, saturation at a bound, and level shifts.
 
-- **Provenance** — content hash, shape, declared types.
-- **Raw-text evidence**, gathered *before* parsing, because the two worst
-  defects in tabular data do not survive it. `1.234` is 1234 under one decimal
-  convention and 1.234 under the other; `03/04/2026` is valid as both DD/MM and
-  MM/DD and they disagree. Both produce perfectly valid values, so nothing
-  downstream ever errors. The tool gathers evidence and refuses to guess when
-  the evidence does not decide.
-- **Measurements** — nulls, cardinality, quantiles, dispersion, sentinel codes
-  masquerading as numbers, and blocks of columns that go missing on the same
-  rows.
-- **Observed properties**, each with its evidence, including whether a standard
-  deviation can be established at all. When the tail inflates σ past the robust
-  scale, a 3σ rule is not weak — it is invalid, and the gate closes so that
-  later checks cannot silently use it.
+Every check declares the properties it needs and is refused when the profile
+has not established them. What was withheld and why travels beside the
+findings, because zero findings at 30% coverage and zero at 95% are different
+objects and one number cannot tell them apart.
 
-Questions are rationed. The tool asks only where an answer changes which checks
-are valid, resolves what it can from file-wide evidence, and states the
-assumptions it made instead of asking about them. Across the 103 CSVs it was
-developed against, 73 raise no question at all and none raises more than four.
+Findings carry a disposition — likely defect, worth a look, or the source doing
+its own bookkeeping — because most anomalies in real data are the source's own
+calendar, and a tool that cannot say so gets switched off within a week. They
+also carry the predicate that produced them, so any claim can be re-run without
+this code.
+
+Confidence is never an opaque score. Each input is named, and agreement between
+two independent checks on one column promotes it.
 
 ## Install
 
@@ -52,8 +49,10 @@ pip install dataassay
 ## Use
 
 ```
-assay profile data.parquet
-assay profile data.csv --json
+assay audit data.parquet          # characterize, then check
+assay profile data.csv            # characterize only
+assay catalog                     # what the checks are and why
+assay audit data.csv --json       # the machine contract
 ```
 
 ## Privacy
