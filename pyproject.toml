@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dataassay"
+dynamic = ["version"]
+description = "Audit a tabular dataset: characterize it, test what can be tested, and say plainly what could not be."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "SoftSignal LLC" }]
+keywords = ["data-quality", "audit", "profiling", "parquet", "csv", "duckdb"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
+]
+
+# ONE runtime dependency, deliberately. duckdb has zero transitive deps and
+# ships prebuilt wheels everywhere. Anything added here is a support burden on
+# every machine this is ever installed on -- and the dependency tree is part of
+# the pitch to the buyer who will not upload their data in the first place.
+dependencies = ["duckdb>=1.0"]
+
+[project.optional-dependencies]
+llm = []   # Phase 5. Kept empty so the extra name is reserved from v0.
+dev = ["pytest>=8", "ruff>=0.6", "build>=1.2"]
+
+[project.scripts]
+assay = "dataassay.cli:main"
+
+[project.urls]
+Homepage = "https://getsoftsignal.com"
+
+[tool.hatch.version]
+path = "src/dataassay/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dataassay"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/", "tests/", "README.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
