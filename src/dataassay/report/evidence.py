@@ -107,31 +107,49 @@ def value_bins(ctx, column: str, bound: float, nbins: int = 40):
     return bins, max(marked, 0)
 
 
-def coverage_cells(ctx, cadence_days: int, group=None):
-    """One cell per expected period between the first and last observation."""
+def coverage_cells(ctx, cadence_days: int, group=None, focus: str | None = None):
+    """Cells for the periods this series actually has, with the real holes.
+
+    Built from the OBSERVED dates, not from a calendar grid. A grid anchored to
+    the first date marks every holiday-shifted observation as missing, so the
+    chart would show four red cells beside a finding that says one — and a
+    picture that contradicts its own claim is worse than no picture. The rule
+    here is the check's rule: a hole is a whole missing period, not a slipped
+    day.
+    """
     s = ctx.structure
-    axis, gwhere = _where_group(s, group), None
-    del gwhere
-    rows = ctx.fetch(
-        f"SELECT min(CAST({q(s.time_axis)} AS DATE)), "
-        f"       max(CAST({q(s.time_axis)} AS DATE)) FROM {ctx.source}"
-        + (f" WHERE 1=1{axis}" if axis else "")
-    )
-    lo, hi = rows[0]
-    if lo is None or hi is None:
-        return []
-    present = {
+    gwhere = _where_group(s, group)
+    dates = [
         r[0]
         for r in ctx.fetch(
-            f"SELECT DISTINCT CAST({q(s.time_axis)} AS DATE) FROM {ctx.source}"
+            f"SELECT DISTINCT CAST({q(s.time_axis)} AS DATE) AS d "
+            f"FROM {ctx.source} WHERE {q(s.time_axis)} IS NOT NULL"
+            + (f"{gwhere}" if gwhere else "")
+            + " ORDER BY d"
         )
-    }
-    from datetime import timedelta
+    ]
+    if len(dates) < 2:
+        return []
 
-    cells, cur = [], lo
-    while cur <= hi:
-        cells.append((str(cur), cur in present))
-        cur = cur + timedelta(days=cadence_days)
-    if len(cells) > MAX_TIMELINE_CELLS:
-        cells = cells[-MAX_TIMELINE_CELLS:]
-    return cells
+    cells: list[tuple[str, bool]] = [(str(dates[0]), True)]
+    for prev, cur in zip(dates, dates[1:], strict=False):
+        missing = max(0, round((cur - prev).days / cadence_days) - 1)
+        for k in range(missing):
+            cells.append((f"after {prev} (+{(k + 1) * cadence_days}d)", False))
+        cells.append((str(cur), True))
+
+    if len(cells) <= MAX_TIMELINE_CELLS:
+        return cells
+
+    centre = len(cells) - MAX_TIMELINE_CELLS // 2
+    if focus:
+        # The check reports a timestamp ("2022-02-01 00:00:00"); cells are
+        # labelled by date. Match on the date part or the window silently
+        # ignores the focus and crops the gap back out.
+        key = str(focus)[:10]
+        for i, (lab, _) in enumerate(cells):
+            if key in lab:
+                centre = i
+                break
+    lo = max(0, centre - MAX_TIMELINE_CELLS // 2)
+    return cells[lo:lo + MAX_TIMELINE_CELLS]

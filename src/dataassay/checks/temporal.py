@@ -198,13 +198,18 @@ class CadenceGap:
         part = ctx.structure.partition
         order = f"{part} ORDER BY t" if part else "ORDER BY t"
 
+        # Carry the series key through. A gap belongs to ONE series, and a
+        # finding that cannot say which one cannot be charted honestly -- the
+        # union of every series has no hole where an individual series does.
+        groups = ctx.structure.group_columns
+        gsel = "".join(f", {q(g)}" for g in groups)
         rows = ctx.fetch(
             f"SELECT prev, t, gap, "
             f"       CASE WHEN {cadence} = 1 AND gap = 3 "
             f"                 AND dayofweek(CAST(prev AS DATE)) = 5 "
-            f"            THEN true ELSE false END AS weekend "
+            f"            THEN true ELSE false END AS weekend{gsel} "
             f"FROM ("
-            f"  SELECT lag(t) OVER ({order}) AS prev, t, "
+            f"  SELECT lag(t) OVER ({order}) AS prev, t{gsel}, "
             f"         date_diff('day', lag(CAST(t AS DATE)) OVER ({order}), "
             f"                   CAST(t AS DATE)) AS gap"
             f"  FROM ({_series_sql(ctx)})"
@@ -221,6 +226,7 @@ class CadenceGap:
             return []
 
         worst = real[0]
+        worst_series = list(worst[4:]) if len(worst) > 4 else []
         missing = sum(periods_missing(r[2]) for r in real)
         jitter = len([r for r in rows if not r[3]]) - len(real)
         weekend_skips = len([r for r in rows if r[3]])
@@ -246,7 +252,10 @@ class CadenceGap:
             summary=(
                 f"{len(real)} gap(s) in a {cadence}-day cadence, about "
                 f"{missing:,} missing period(s). The largest runs from {worst[0]} "
-                f"to {worst[1]} ({worst[2]} days)."
+                f"to {worst[1]} ({worst[2]} days)"
+                + (f", in {' / '.join(str(v) for v in worst_series)}"
+                   if worst_series else "")
+                + "."
             ),
             evidence={
                 "cadence_days": cadence,
@@ -255,6 +264,7 @@ class CadenceGap:
                 "weekend_skips_excluded": weekend_skips,
                 "jitter_excluded": jitter,
                 "largest": [str(worst[0]), str(worst[1]), int(worst[2])],
+                "series": [str(v) for v in worst_series],
                 "examples": [[str(r[0]), str(r[1]), int(r[2])] for r in real[:5]],
             },
             predicate=(

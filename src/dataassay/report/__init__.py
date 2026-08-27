@@ -62,10 +62,19 @@ def _chart_for(f, ctx) -> str:
             return charts.histogram(bins, marked, label=f"{col}: distribution")
 
         if f.check_id == "cadence_gap":
-            cells = evidence.coverage_cells(ctx, int(ev.get("cadence_days") or 1))
+            largest = ev.get("largest") or [None]
+            series_key = ev.get("series") or None
+            cells = evidence.coverage_cells(
+                ctx, int(ev.get("cadence_days") or 1),
+                group=series_key, focus=largest[0],
+            )
             if len(cells) < 3:
                 return ""
-            return charts.timeline(cells, label="periods present and missing")
+            windowed = "" if len(cells) < evidence.MAX_TIMELINE_CELLS else " (window)"
+            where = f" — {' / '.join(series_key)}" if series_key else ""
+            return charts.timeline(
+                cells, label=f"periods present and missing{where}{windowed}"
+            )
     except (duckdb.Error, ValueError, TypeError, KeyError):
         # A chart is an aid, never the finding. If the data behind one cannot be
         # fetched, the finding still stands on its evidence and predicate.

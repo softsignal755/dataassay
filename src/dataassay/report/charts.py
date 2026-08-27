@@ -23,10 +23,14 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass
 
-W, H = 720, 200
-PAD_L, PAD_R, PAD_T, PAD_B = 52, 16, 16, 30
+W, H = 720, 210
+PAD_L, PAD_R, PAD_B = 52, 16, 30
+# Two top paddings: a bare chart starts high, one carrying a legend reserves a
+# band for it. Sharing one value put the legend, the top axis tick and the
+# annotation label in the same 12 pixels.
+PAD_T = 18
+PAD_T_LEGEND = 40
 PLOT_W = W - PAD_L - PAD_R
-PLOT_H = H - PAD_T - PAD_B
 
 # Roles, not hex, everywhere below. The page defines both modes.
 SERIES = "var(--series-1)"
@@ -75,14 +79,27 @@ def _fmt(v: float) -> str:
     return f"{v:.4g}"
 
 
-def _frame(body: str, label: str, ylab: str = "") -> str:
+def _frame(body: str, label: str, ylab: str = "", top: float = PAD_T) -> str:
     return (
         f'<svg class="chart" viewBox="0 0 {W} {H}" role="img" '
         f'aria-label="{esc(label)}" preserveAspectRatio="xMidYMid meet">'
         f'<title>{esc(label)}</title>'
-        + (f'<text x="4" y="12" class="axlabel">{esc(ylab)}</text>' if ylab else "")
+        + (f'<text x="4" y="{top - 6:.0f}" class="axlabel">{esc(ylab)}</text>'
+           if ylab else "")
         + body
         + "</svg>"
+    )
+
+
+def _annotate(x: float, y: float, text: str) -> str:
+    """A label pinned inside the plot, anchored away from whichever edge it is
+    nearest so it never runs off."""
+    anchor = "end" if x > W - PAD_R - 90 else "start"
+    dx = -6 if anchor == "end" else 6
+    x = min(max(x + dx, PAD_L + 2), W - PAD_R - 2)
+    return (
+        f'<text x="{x:.1f}" y="{y:.1f}" class="tick" text-anchor="{anchor}" '
+        f'style="font-weight:600">{esc(text)}</text>'
     )
 
 
@@ -128,7 +145,7 @@ def series(points, flagged=None, band=None, label="series", ylab="") -> str:
     lo, hi = _nice(min(ys_vals), max(ys_vals))
     xs = Scale(0, len(points) - 1, PAD_L, W - PAD_R)
     ysc = Scale(lo, hi, H - PAD_B, PAD_T)
-    top = PAD_T + 10
+    top = PAD_T + 11
 
     body = [_gridlines(ysc, lo, hi)]
 
@@ -138,14 +155,11 @@ def series(points, flagged=None, band=None, label="series", ylab="") -> str:
         x0, x1 = xs(b0), xs(b1)
         body.append(
             f'<rect x="{x0:.1f}" y="{PAD_T}" width="{max(x1 - x0, 2):.1f}" '
-            f'height="{PLOT_H}" fill="{colour}" opacity="0.14"/>'
+            f'height="{H - PAD_B - PAD_T}" fill="{colour}" opacity="0.14"/>'
             f'<line x1="{x0:.1f}" y1="{PAD_T}" x2="{x0:.1f}" y2="{H - PAD_B}" '
             f'stroke="{colour}" stroke-width="2"/>'
         )
-        body.append(
-            f'<text x="{min(x0 + 6, W - PAD_R - 4):.1f}" y="{top}" class="tick" '
-            f'text-anchor="start" style="font-weight:600">{esc(note)}</text>'
-        )
+        body.append(_annotate(x0, top, note))
 
     path = " ".join(
         f"{'M' if i == 0 else 'L'}{xs(i):.1f},{ysc(v):.1f}"
@@ -172,12 +186,7 @@ def series(points, flagged=None, band=None, label="series", ylab="") -> str:
             f'stroke="{SURFACE}" stroke-width="2">'
             f'<title>{esc(xlab)}: {esc(_fmt(v))} — {esc(note)}</title></circle>'
         )
-        anchor = "end" if x > W / 2 else "start"
-        dx = -9 if anchor == "end" else 9
-        body.append(
-            f'<text x="{x + dx:.1f}" y="{top}" class="tick" text-anchor="{anchor}" '
-            f'style="font-weight:600">{esc(note)}</text>'
-        )
+        body.append(_annotate(x, top, note))
 
     marks = {0, len(points) - 1}
     for i in sorted(marks):
@@ -209,7 +218,7 @@ def decades(rows, cluster_max_decade, label="magnitudes") -> str:
     counts = dict(rows)
     hi = max(counts.values())
     xs = Scale(0, max(len(span) - 1, 1), PAD_L + 8, W - PAD_R - 8)
-    ysc = Scale(0, hi, H - PAD_B, PAD_T)
+    ysc = Scale(0, hi, H - PAD_B, PAD_T_LEGEND)
     bw = max(3.0, min(26.0, (PLOT_W - 16) / max(len(span), 1) - 2))
 
     body = [_gridlines(ysc, 0, hi)]
@@ -237,18 +246,14 @@ def decades(rows, cluster_max_decade, label="magnitudes") -> str:
         )
     residue = [i for i, d in enumerate(span) if d <= cluster_max_decade and counts.get(d)]
     if residue:
-        mid = xs(sum(residue) / len(residue))
-        body.append(
-            f'<text x="{mid:.1f}" y="{PAD_T + 10}" class="tick" '
-            f'text-anchor="middle" style="font-weight:600">should be zero</text>'
-        )
+        body.append(_annotate(xs(max(residue)), PAD_T_LEGEND - 8, "should be zero"))
     body.append(
         f'<line x1="{PAD_L}" y1="{H - PAD_B}" x2="{W - PAD_R}" y2="{H - PAD_B}" '
         f'stroke="{AXIS}" stroke-width="1"/>'
     )
     body.insert(0, _legend([(CRITICAL, "residue"), (SERIES, "measured"),
                             (GRID, "no values")]))
-    return _frame("".join(body), label, "count")
+    return _frame("".join(body), label, "count", top=PAD_T_LEGEND)
 
 
 def histogram(bins, marked_index=None, label="distribution") -> str:
@@ -272,14 +277,10 @@ def histogram(bins, marked_index=None, label="distribution") -> str:
             f'<title>{esc(_fmt(edge))}: {n:,}</title></rect>'
         )
     if marked_index is not None and bins[marked_index][1]:
-        mx = xs(marked_index)
-        anchor = "end" if mx > W / 2 else "start"
-        body.append(
-            f'<text x="{mx + (-8 if anchor == "end" else 8):.1f}" '
-            f'y="{PAD_T + 10}" class="tick" text-anchor="{anchor}" '
-            f'style="font-weight:600">pile-up at {esc(_fmt(bins[marked_index][0]))}'
-            f"</text>"
-        )
+        body.append(_annotate(
+            xs(marked_index), PAD_T + 11,
+            f"pile-up at {_fmt(bins[marked_index][0])}",
+        ))
     for i in (0, len(bins) - 1):
         body.append(
             f'<text x="{xs(i):.1f}" y="{H - 10}" class="tick" '

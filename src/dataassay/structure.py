@@ -136,7 +136,14 @@ def _pick_grain(
     So the panel search always runs when there is a time axis, and a unique
     single column is only used as the grain when the panel search fails.
     """
-    unique_cols = [c.name for c in cols if rows and c.distinct == c.non_null == rows]
+    # A key is an identifier. A float measurement can be unique by accident --
+    # 3,941 distinct temperatures in 3,941 rows is a coincidence of resolution,
+    # not a key -- and calling it the grain is both wrong and useless.
+    unique_cols = [
+        c.name for c in cols
+        if rows and c.distinct == c.non_null == rows
+        and (c.kind in ("text", "temporal") or (c.kind == "numeric" and c.integral))
+    ]
 
     if s.time_axis:
         candidates = [
