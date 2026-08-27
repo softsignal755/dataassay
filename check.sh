@@ -22,4 +22,17 @@ installed=$("$CLEAN/v/bin/pip" list --format=freeze | cut -d= -f1 \
 echo "installed: $installed"
 [ "$installed" = "dataassay duckdb " ] || { echo "FAIL: unexpected dependency surface"; exit 1; }
 
+echo "── the llm extra is genuinely optional ──"
+# The core must keep its single dependency whether or not the extra exists, and
+# the extra must add exactly one thing. Both halves are the product claim.
+EXTRA=$(mktemp -d)
+trap 'rm -rf "$CLEAN" "$EXTRA"' EXIT
+python3 -m venv "$EXTRA/v"
+"$EXTRA/v/bin/pip" install -q "$(ls dist/*.whl)[llm]"
+"$EXTRA/v/bin/python" -c "import dataassay.llm.provider" >/dev/null
+added=$("$EXTRA/v/bin/pip" list --format=freeze | cut -d= -f1 \
+  | grep -viE '^(pip|setuptools|wheel|dataassay|duckdb)$' | sort | tr '\n' ' ')
+echo "extra adds: $added"
+case "$added" in *anthropic*) ;; *) echo "FAIL: llm extra did not add anthropic"; exit 1;; esac
+
 echo "✓ all gates passed"

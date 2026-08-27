@@ -64,6 +64,7 @@ assay profile data.csv            # characterize only
 assay init data.csv               # write a manifest to answer its questions
 assay catalog                     # what the checks are and why
 assay audit data.csv --json       # the machine contract
+assay interview data.csv          # optional: ask a model (metadata only)
 ```
 
 ## Validation
@@ -108,14 +109,42 @@ the same dataset asks nothing, and it can run where there is nobody to ask at
 all — a pipeline, a server, CI. The conversation is just the most convenient
 way to author the file the first time.
 
+## The interview (optional)
+
+`assay interview` sends the **profile** — column names, types, counts,
+quantiles, and the questions the profiler could not settle — to a model, and
+writes what it proposes into the manifest.
+
+Three things make it safe to use on data you cannot upload.
+
+**It sends metadata, never rows.** You see exactly what would go, before it
+goes: a plain-language summary, then a confirmation. `--show-payload` prints the
+literal bytes and sends nothing. Two disclosures are admitted rather than
+hidden — column *names* have to go, and low-cardinality columns include their
+distinct values because a categorical column cannot be characterized without
+them. `--redact-values` strips the second.
+
+**Proposals never become answers.** They land in the manifest's `proposed`
+block, beside `declared`, and are never applied. You move across what you agree
+with. `declared` records that a person decided, and that is only worth
+something if it stays true.
+
+**The model does not choose which checks run.** It proposes property
+declarations; the engine gates the checks itself, deterministically, exactly as
+it does for a declaration you typed. Handing check selection to a language model
+would throw away the discipline the whole tool is built on.
+
+Credentials come from the environment only — never a file, never an argument,
+so a key cannot end up in your shell history or a commit.
+
 ## Privacy
 
 Nothing is uploaded. The engine runs entirely in your process against your
 files, and has exactly one runtime dependency (`duckdb`, which has no
-transitive dependencies of its own). When an LLM adapter arrives it will be an
-optional extra, it will receive *metadata only* — dtypes, counts, quantiles,
-histogram bins — never rows, and it will show you that payload before sending
-it.
+transitive dependencies of its own). The LLM adapter is an optional extra
+(`pip install 'dataassay[llm]'`) and the only module in the package that opens a
+network connection — a test walks every other module's imports and fails if a
+network library appears in one.
 
 ## License
 

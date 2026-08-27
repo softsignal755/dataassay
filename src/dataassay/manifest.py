@@ -10,7 +10,12 @@ Two sections, and the split is the whole design:
   detected   what the tool worked out on its own, written for reference. It is
              regenerated on every `assay init` and nothing is lost by editing
              over it.
-  declared   what a person says is true. Wins over `detected`, always.
+  proposed   what a model suggested during the interview. Never applied. It
+             sits beside `declared` so a person can read it, agree with it, and
+             move it across -- which is the whole point: `declared` means a
+             HUMAN said so, and an LLM writing directly into it would quietly
+             destroy the one guarantee the manifest offers.
+  declared   what a person says is true. Wins over both, always.
 
 Keeping them apart means a value's provenance is never ambiguous. There is no
 guessing later whether `time_axis: date` was inferred or confirmed -- the
@@ -34,10 +39,14 @@ SUFFIX = ".assay.json"
 _NOTE = (
     "Edit the 'declared' block. Anything you put there overrides 'detected', "
     "which is regenerated each time this file is written and is only there for "
-    "reference. Every field is optional: what you leave out stays inferred, and "
-    "the audit reports which checks that costs. List a question's code under "
-    "'skipped' to say you have seen it and are choosing not to answer — that is "
-    "recorded as a deliberate gap rather than an unread one."
+    "reference. 'proposed' holds suggestions from `assay interview` and is "
+    "never applied — move what you agree with into 'declared' yourself, because "
+    "'declared' is the record that a person decided, and that is only worth "
+    "something if it stays true. Every field is optional: what you leave out "
+    "stays inferred, and the audit reports which checks that costs. List a "
+    "question's code under 'skipped' to say you have seen it and are choosing "
+    "not to answer — that is recorded as a deliberate gap rather than an unread "
+    "one."
 )
 
 
@@ -48,6 +57,7 @@ def path_for(data_file: Path) -> Path:
 @dataclass
 class Manifest:
     detected: dict[str, Any] = field(default_factory=dict)
+    proposed: dict[str, Any] = field(default_factory=dict)
     declared: dict[str, Any] = field(default_factory=dict)
     schema_columns: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
@@ -78,6 +88,7 @@ class Manifest:
             "note": _NOTE,
             "schema": {"columns": self.schema_columns},
             "declared": self.declared,
+            "proposed": self.proposed,
             "skipped": self.skipped,
             "questions": self.questions,
             "detected": self.detected,
@@ -97,6 +108,7 @@ def load(path: Path) -> Manifest:
     return Manifest(
         detected=raw.get("detected") or {},
         declared=raw.get("declared") or {},
+        proposed=raw.get("proposed") or {},
         schema_columns=(raw.get("schema") or {}).get("columns") or [],
         skipped=raw.get("skipped") or [],
         questions=raw.get("questions") or [],

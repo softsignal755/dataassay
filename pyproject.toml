@@ -32,7 +32,7 @@ classifiers = [
 dependencies = ["duckdb>=1.0"]
 
 [project.optional-dependencies]
-llm = []   # Phase 5. Kept empty so the extra name is reserved from v0.
+llm = ["anthropic>=0.40"]   # The ONLY place a network dependency appears.
 dev = ["pytest>=8", "ruff>=0.6", "build>=1.2"]
 
 [project.scripts]
