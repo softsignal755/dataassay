@@ -341,7 +341,7 @@ def build(
     owned = con is None
     con = con or duckdb.connect(":memory:")
     try:
-        source = source_expr(reader, prov.lenient)
+        source = source_expr(reader, prov.read_mode)
         params = [str(path)]
         schema = [(c.name, c.declared_type) for c in prov.columns]
         cols = columns_mod.profile_columns(con, source, params, schema, prov.row_count)

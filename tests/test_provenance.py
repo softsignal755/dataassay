@@ -38,3 +38,33 @@ def test_describe_reports_shape(csv_file):
     assert [c.name for c in prov.columns] == ["date", "state", "value"]
     assert prov.reader == "read_csv"
     assert prov.tool_version == __version__
+
+
+class TestReadModes:
+    def test_a_quoted_field_beyond_the_sniff_window_is_recovered(self, tmp_path):
+        """The sniffer samples a prefix. A file whose only quoted fields appear
+        past it is sniffed as having NO quote character, and every quoted comma
+        then splits a row. On a real 50,947-row file that silently dropped
+        1,232 rows — and the tool called them a defect in the user's data."""
+        p = tmp_path / "late_quotes.csv"
+        rows = ["a,b,c"]
+        rows += [f"{i},plain,{i * 2}" for i in range(30_000)]
+        rows.append('99999,"has, a comma",7')
+        p.write_text("\n".join(rows) + "\n")
+
+        prov = describe(p)
+        assert prov.row_count == 30_001
+        assert prov.column_count == 3
+        assert prov.read_mode == "quoted"
+        assert prov.lenient is False
+
+    def test_an_ordinary_file_still_reads_strict(self, write_csv):
+        prov = describe(write_csv("a.csv", "a,b\n1,2\n3,4\n"))
+        assert prov.read_mode == "strict"
+        assert prov.lenient is False
+
+    def test_genuinely_broken_rows_still_fall_through_to_lenient(self, write_csv):
+        body = "a,b\n" + "".join(f"{i},{i}\n" for i in range(50))
+        body += '3,"unterminated\n'
+        prov = describe(write_csv("b.csv", body))
+        assert prov.row_count > 0

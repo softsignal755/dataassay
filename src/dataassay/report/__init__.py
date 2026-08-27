@@ -127,7 +127,7 @@ def build(audit, data_file: Path, out_html: Path) -> tuple[Path, Path]:
             profile=audit.profile,
             structure=audit.structure,
             con=con,
-            source=source_expr(reader, audit.profile.provenance.lenient),
+            source=source_expr(reader, audit.profile.provenance.read_mode),
             params=[str(data_file)],
         )
         chart_map = {id(f): _chart_for(f, ctx) for f in audit.findings}

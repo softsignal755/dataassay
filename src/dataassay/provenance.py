@@ -59,11 +59,25 @@ class Column:
     declared_type: str
 
 
-def source_expr(reader: str, lenient: bool = False) -> str:
+# How hard to try before giving up on a CSV, in order. The middle rung exists
+# because DuckDB's sniffer samples a prefix: a file whose only quoted fields
+# appear past that window is sniffed as having NO quote character, and every
+# quoted comma then splits a row into an extra column. On one real file that
+# silently dropped 1,232 of 50,947 rows -- and the tool reported them as a
+# defect in the user's data, which is precisely the failure it exists to catch.
+# RFC 4180 says the quote character is `"`, so saying so explicitly is not a
+# guess; it is the standard the sniffer was trying to infer.
+STRICT, QUOTED, LENIENT = "strict", "quoted", "lenient"
+READ_MODES = (STRICT, QUOTED, LENIENT)
+
+
+def source_expr(reader: str, mode: str = STRICT) -> str:
     """The table function to read this file with, as a bindable expression."""
-    if lenient and reader == "read_csv":
-        return "read_csv(?, ignore_errors=true)"
-    return f"{reader}(?)"
+    if reader != "read_csv" or mode == STRICT:
+        return f"{reader}(?)"
+    if mode == QUOTED:
+        return "read_csv(?, quote='\"')"
+    return "read_csv(?, quote='\"', ignore_errors=true)"
 
 
 @dataclass(frozen=True)
@@ -78,9 +92,14 @@ class Provenance:
     audited_at: str
     tool: str
     tool_version: str
-    # True when a strict read failed and rows had to be skipped to proceed. A
-    # file that cannot be parsed is a finding, not a crash.
-    lenient: bool = False
+    # How the file had to be read. "strict" is a clean parse; "quoted" means the
+    # sniffer's guess was wrong and the standard quote character recovered it;
+    # "lenient" means rows had to be SKIPPED, which is a finding, not a crash.
+    read_mode: str = "strict"
+
+    @property
+    def lenient(self) -> bool:
+        return self.read_mode == "lenient"
 
     @property
     def column_count(self) -> int:
@@ -100,10 +119,10 @@ def describe(path: Path) -> Provenance:
     """
     reader = reader_for(path)
     con = duckdb.connect(":memory:")
-    lenient = False
+    mode = STRICT
     try:
-        for attempt_lenient in (False, True):
-            src = source_expr(reader, attempt_lenient)
+        for attempt in READ_MODES:
+            src = source_expr(reader, attempt)
             try:
                 described = con.execute(
                     f"DESCRIBE SELECT * FROM {src}", [str(path)]
@@ -112,10 +131,10 @@ def describe(path: Path) -> Provenance:
                     f"SELECT count(*) FROM {src}", [str(path)]
                 ).fetchone()
             except duckdb.InvalidInputException:
-                if attempt_lenient or reader != "read_csv":
+                if attempt == LENIENT or reader != "read_csv":
                     raise
                 continue
-            lenient = attempt_lenient
+            mode = attempt
             break
         columns = [Column(name=row[0], declared_type=row[1]) for row in described]
     finally:
@@ -132,5 +151,5 @@ def describe(path: Path) -> Provenance:
         audited_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         tool="dataassay",
         tool_version=__version__,
-        lenient=lenient,
+        read_mode=mode,
     )

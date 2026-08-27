@@ -106,7 +106,7 @@ def run(
     con = duckdb.connect(":memory:")
     try:
         profile = build(path, byte_cap=byte_cap or BYTE_CAP, con=con)
-        source = source_expr(reader, profile.provenance.lenient)
+        source = source_expr(reader, profile.provenance.read_mode)
         params = [str(path)]
         manifest = (
             manifest_mod.discover(path, manifest_path) if use_manifest else None
