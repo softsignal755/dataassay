@@ -18,8 +18,30 @@ report next to what did run.
 
 ## Status
 
-**v0.0.1 — Phase 0.** Skeleton, packaging, and a provenance slice. Property
-detection, the check catalog, and the HTML report are not here yet.
+**v0.1.0 — the profiler.** Characterization only. The check catalog and the
+HTML report are not here yet.
+
+`assay profile` reports:
+
+- **Provenance** — content hash, shape, declared types.
+- **Raw-text evidence**, gathered *before* parsing, because the two worst
+  defects in tabular data do not survive it. `1.234` is 1234 under one decimal
+  convention and 1.234 under the other; `03/04/2026` is valid as both DD/MM and
+  MM/DD and they disagree. Both produce perfectly valid values, so nothing
+  downstream ever errors. The tool gathers evidence and refuses to guess when
+  the evidence does not decide.
+- **Measurements** — nulls, cardinality, quantiles, dispersion, sentinel codes
+  masquerading as numbers, and blocks of columns that go missing on the same
+  rows.
+- **Observed properties**, each with its evidence, including whether a standard
+  deviation can be established at all. When the tail inflates σ past the robust
+  scale, a 3σ rule is not weak — it is invalid, and the gate closes so that
+  later checks cannot silently use it.
+
+Questions are rationed. The tool asks only where an answer changes which checks
+are valid, resolves what it can from file-wide evidence, and states the
+assumptions it made instead of asking about them. Across the 103 CSVs it was
+developed against, 73 raise no question at all and none raises more than four.
 
 ## Install
 
