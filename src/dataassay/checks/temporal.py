@@ -417,6 +417,12 @@ class FileOrder:
         blocked = _needs_time_axis(ctx)
         if blocked:
             return blocked
+        if ctx.derived:
+            return Applicability.no(
+                "these rows are an aggregate, and a GROUP BY has no stored "
+                "order to be wrong — 'the order rows sit in' is a property of "
+                "the file, which this is not"
+            )
         if ctx.profile.provenance.row_count < 3:
             return Applicability.no("fewer than 3 rows: order is meaningless")
         return Applicability.yes()

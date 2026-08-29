@@ -189,7 +189,63 @@ def _render_audit(a: audit_mod.Audit, width: int = 88) -> str:
 
     for note in s.assumptions:
         out += _wrap(f"~ {note}", width, "    ")
+
+    out += _render_rollups(a, width)
     return "\n".join(out)
+
+
+def _render_rollups(a: audit_mod.Audit, width: int) -> list[str]:
+    """The coarser grains, under the file-level audit that produced them.
+
+    Only what is NEW at each grain is listed. A roll-up that repeats the
+    file-level findings has shown nothing, and saying so plainly is more useful
+    than reprinting them.
+    """
+    if a.rollup_withheld:
+        return ["", "  ROLL-UP  not run"] + _wrap(
+            f"– {a.rollup_withheld}", width, "    "
+        )
+    if not a.rollups:
+        return []
+
+    out = ["", f"  ROLL-UP  {len(a.rollups)} coarser grain(s)"]
+    level = a.rollups[0].level
+    for how, label in (("sum", "summed"), ("mean", "averaged")):
+        names = [m.name for m in level.measures if m.agg == how]
+        if names:
+            out += _wrap(f"{label}: {', '.join(names)}", width, "    ")
+    if any(m.agg == "mean" for m in level.measures):
+        out += _wrap(
+            "~ the averaged columns are weighted equally. If the dropped key's "
+            "values cover different areas, populations, or volumes, the mean "
+            "understates the large ones.",
+            width, "    ",
+        )
+    for col, reason in level.excluded:
+        out += _wrap(f"– {col} not carried: {reason}", width, "    ")
+
+    for r in a.rollups:
+        out.append("")
+        out += _wrap(
+            f"▸ {r.level.label}  "
+            f"({r.level.rows:,} rows from {r.level.source_rows:,})",
+            width, "    ",
+        )
+        if not r.findings:
+            out += _wrap(
+                "nothing at this grain that the file-level audit did not "
+                "already report",
+                width, "      ",
+            )
+            continue
+        for f in r.findings:
+            where = f"{f.column}: " if f.column else ""
+            out += _wrap(f"• {where}{f.summary}", width, "      ")
+            out += _wrap(
+                f"[{f.confidence.level}] " + "; ".join(f.confidence.inputs),
+                width, "        ",
+            )
+    return out
 
 
 def _cmd_audit(args: argparse.Namespace) -> int:
@@ -202,6 +258,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
             path,
             manifest_path=Path(args.manifest) if args.manifest else None,
             use_manifest=not args.no_manifest,
+            rollup=args.rollup,
         )
     except UnsupportedFormat as exc:
         print(f"assay: {exc}", file=sys.stderr)
@@ -424,6 +481,37 @@ def _cmd_declare(args: argparse.Namespace) -> int:
         m.declared["forecast_column"] = args.forecast_column
         changes.append(f"declared forecast_column = {args.forecast_column}")
 
+    # Additivity is the one property a roll-up cannot infer and the values can
+    # never reveal: a column of unit prices sums perfectly happily into
+    # nonsense. Declaring it is how a person stops the tool guessing from a
+    # column name.
+    for spec in args.aggregate or []:
+        col, _, how = spec.partition("=")
+        col, how = col.strip(), how.strip().lower()
+        if how not in ("sum", "mean", "none"):
+            print(f"assay: --aggregate {spec!r}: how must be sum, mean, or none",
+                  file=sys.stderr)
+            return 2
+        current = dict(m.declared.get("aggregate") or {})
+        current[col] = how
+        m.declared["aggregate"] = current
+        changes.append(f"declared {col} aggregates by {how}")
+
+    for key, flag in (("additive", args.additive),
+                      ("non_additive", args.non_additive)):
+        for col in flag or []:
+            names = [c.strip() for c in col.split(",") if c.strip()]
+            current = list(m.declared.get(key) or [])
+            other = key == "additive" and "non_additive" or "additive"
+            for name in names:
+                if name not in current:
+                    current.append(name)
+                m.declared[other] = [
+                    c for c in (m.declared.get(other) or []) if c != name
+                ]
+                changes.append(f"declared {name} {key.replace('_', '-')}")
+            m.declared[key] = current
+
     for code in args.skip or []:
         if code not in m.skipped:
             m.skipped.append(code)
@@ -436,7 +524,8 @@ def _cmd_declare(args: argparse.Namespace) -> int:
 
     if not changes:
         print("assay: nothing to do. Pass --time-axis / --grain / "
-              "--forecast-column / --skip / --accept-proposed.", file=sys.stderr)
+              "--forecast-column / --additive / --non-additive / --skip / "
+              "--accept-proposed.", file=sys.stderr)
         return 2
 
     # A declaration that names a column the file does not have is worse than no
@@ -456,6 +545,13 @@ def _cmd_declare(args: argparse.Namespace) -> int:
     for col in m.declared.get("grain") or []:
         if col not in known:
             bad.append(f"grain: no column named {col!r}")
+    for key in ("additive", "non_additive"):
+        for col in m.declared.get(key) or []:
+            if col not in known:
+                bad.append(f"{key}: no column named {col!r}")
+    for col in (m.declared.get("aggregate") or {}):
+        if col not in known:
+            bad.append(f"aggregate: no column named {col!r}")
     if bad:
         print("assay: refusing to write a declaration this file cannot support:",
               file=sys.stderr)
@@ -563,6 +659,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="write a self-contained HTML report and a flagged-items CSV",
     )
     audit.add_argument(
+        "--rollup", action="store_true",
+        help=(
+            "also audit the aggregate: sum the additive measures over each "
+            "series-key column in turn and run the same checks at that coarser "
+            "grain, to catch what no single series can show"
+        ),
+    )
+    audit.add_argument(
         "--fail-on-finding",
         action="store_true",
         help="exit 1 if any likely defect was found (for pipelines)",
@@ -608,6 +712,14 @@ def build_parser() -> argparse.ArgumentParser:
                          help="comma-separated columns that make a row unique")
     declare.add_argument("--forecast-column", metavar="COL",
                          help="column marking rows as forecast rather than actual")
+    declare.add_argument("--additive", action="append", metavar="A,B",
+                         help="these columns are amounts: sum them in a roll-up")
+    declare.add_argument("--non-additive", action="append", metavar="A,B",
+                         help="these columns are not amounts: average them "
+                              "rather than summing (prices, rates, indices)")
+    declare.add_argument("--aggregate", action="append", metavar="COL=HOW",
+                         help="how one column combines in a roll-up: "
+                              "sum, mean, or none")
     declare.add_argument("--skip", action="append", metavar="CODE",
                          help="record a question as deliberately unanswered "
                               "(repeatable)")

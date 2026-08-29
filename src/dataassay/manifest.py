@@ -46,7 +46,10 @@ _NOTE = (
     "stays inferred, and the audit reports which checks that costs. List a "
     "question's code under 'skipped' to say you have seen it and are choosing "
     "not to answer — that is recorded as a deliberate gap rather than an unread "
-    "one."
+    "one. 'additive' and 'non_additive' list the columns a roll-up may and may "
+    "not sum: summing a price, rate, or index is a category error no amount of "
+    "looking at the values can catch, so the detected split is a guess from "
+    "column names and is worth correcting before you trust `--rollup`."
 )
 
 
@@ -139,6 +142,11 @@ def from_audit(profile, structure) -> Manifest:
             "group_columns": structure.group_columns,
             "grain": structure.grain,
             "grain_is_unique": structure.grain_is_unique,
+            # What a roll-up WOULD sum, written down before anyone asks for
+            # one. Guessed from column names, which is exactly why it sits in
+            # `detected` where a wrong guess costs nothing until someone
+            # copies it across.
+            "aggregate": _aggregate_guess(profile, structure),
         },
         declared={},
         skipped=[],
@@ -147,6 +155,14 @@ def from_audit(profile, structure) -> Manifest:
             for n in profile.questions
         ],
     )
+
+
+def _aggregate_guess(profile, structure) -> dict[str, str]:
+    from dataassay.rollup import classify_measures
+
+    return {
+        m.name: m.agg for m in classify_measures(profile, structure)
+    }
 
 
 def schema_drift(manifest: Manifest, columns: list[str]) -> tuple[list[str], list[str]]:

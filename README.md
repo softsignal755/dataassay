@@ -72,7 +72,84 @@ assay declare data.csv --time-axis d   # record an answer in it
 assay catalog                     # what the checks are and why
 assay audit data.csv --json       # the machine contract
 assay interview data.csv          # optional: ask a model (metadata only)
+assay audit panel.parquet --rollup  # and again, one grain coarser
 ```
+
+### Input formats
+
+CSV, TSV, and TXT are read as delimited text. **Parquet is read natively** —
+`.parquet` and `.pq` go straight to DuckDB's `read_parquet`, so there is no
+conversion step and nothing to stage first.
+
+Do not convert Parquet to CSV to audit it. Parquet carries its own types, which
+is strictly more information than a CSV can hold: the raw-text pass reports
+itself not-applicable on a Parquet file rather than re-deriving a decimal
+convention and a date convention that were never in doubt. Flattening to CSV
+discards the types and then manufactures exactly the ambiguities the tool would
+otherwise have to ask you about.
+
+Both go through the same engine and the same check catalog. Reading pushes down
+to DuckDB either way, so a file larger than memory is not a special case.
+
+## Roll-up
+
+A panel hides a class of defect from a per-series audit. When one partner stops
+reporting, every surviving series is individually clean — right cadence, no
+gaps, no level shift — and only the total sags. No amount of checking segments
+can see that, because the evidence is not in any segment. It is in their sum.
+
+`--rollup` aggregates the measures over each series-key column in turn — summing
+amounts, averaging everything else — and runs the same catalog at that coarser
+grain:
+
+```
+ROLL-UP  4 coarser grain(s)
+  summed: qty_kg, value_usd
+
+  ▸ summed over partner → flow × hs_code × reporter  (1,080 rows from 4,318)
+    • qty_kg: At 2024-07-01 this series jumps by ×215.6 and holds…
+```
+
+Three things it will not do, which are most of the design:
+
+**It will not sum a column that is not an amount.** Summing claims two rows can
+be added and still mean something. That is true of tonnes and dollars and false
+of temperatures, indices, and z-scores — and nothing in the values reveals
+which, because a column of unit prices sums perfectly happily into nonsense. So
+only names that read as amounts are summed; **everything else is averaged**, and
+that asymmetry is deliberate. Guessing SUM on an intensive column invents a
+number that means nothing; guessing MEAN on an extensive one is merely a less
+natural summary. When the tool cannot tell, it takes the option whose failure
+mode is "less informative" over the one whose failure mode is "fabricates".
+
+Averaging is weighted equally, and the report says so — if the dropped key's
+values cover different areas or volumes, the mean understates the large ones.
+Correct any column directly:
+
+```
+assay declare trade.parquet --additive balance          # it really is an amount
+assay declare weather.csv --aggregate max_tmax_c=none   # do not carry it at all
+```
+
+**It will not run a check that has no meaning on an aggregate.** `file_order`
+asks whether rows are stored in time order; a `GROUP BY` has no stored order to
+be wrong, so the check is withheld at every rolled-up level and says why.
+
+**It will not repeat itself.** Only what is new at a grain is listed. A fact
+about the whole file is one fact at every grain, and printing it once per level
+would bury the findings that are specific to a level.
+
+Provenance stays the file's. The rolled rows were computed, but they were
+computed from those bytes, so the same content hash still identifies what was
+audited — with the level recorded beside it, because a reader must never mistake
+a rolled-up finding for one about a row that exists on disk.
+
+One caveat worth stating plainly: rolling up **lowers** the detection floor for
+level shifts, because summing independent series cancels noise — on a 120-series
+trade panel the smallest detectable step moved from ×8.8 to ×4.7. It does not
+remove the floor. `level_shift` is calibrated to catch splices and unit errors,
+not ordinary magnitude changes, and a country quietly tripling its exports still
+passes both.
 
 ## Validation
 

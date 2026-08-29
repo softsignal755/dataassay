@@ -177,6 +177,11 @@ class CheckContext:
     source: str
     params: list[str]
     manifest: Manifest | None = None
+    # True when `source` is an aggregate computed from the file rather than the
+    # file itself. A few checks read properties of the STORED rows -- their
+    # order above all -- and those properties do not exist for rows that were
+    # summed into being a moment ago.
+    derived: bool = False
 
     def columns(self, kind: str | None = None) -> list[ColumnProfile]:
         cols = self.profile.columns
