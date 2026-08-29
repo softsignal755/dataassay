@@ -174,6 +174,30 @@ transitive dependencies of its own). The LLM adapter is an optional extra
 network connection — a test walks every other module's imports and fails if a
 network library appears in one.
 
+## Where this came from
+
+dataassay was extracted from the data pipeline behind
+[SoftSignal](https://getsoftsignal.com), a small independent commodities
+research operation. These are the checks we run against our own feeds — USDA,
+CONAB, CFTC, NOAA and others — before anything built on them is published.
+
+That is the whole reason it behaves the way it does. It refuses checks whose
+assumptions do not hold because we needed to know which of our own numbers were
+actually supported. It reports what it could not check because a silent gap in
+our data becomes a confident sentence in a report. Most of its checks exist because
+something got past us first, and each one records what earned it — run
+`assay catalog` and read the "earned by" line under any check.
+
+## Support
+
+MIT, and offered as-is. This is tooling we maintain because we depend on it, not
+a product with a support commitment behind it. Issues and pull requests are
+welcome and will be answered when time allows; there is no SLA, and no promise
+of backward compatibility before 1.0 — the version numbers are deliberately low
+because the check catalog is still moving.
+
+If you are relying on it for something that matters, pin the version.
+
 ## License
 
 MIT © SoftSignal LLC
