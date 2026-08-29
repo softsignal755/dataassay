@@ -78,9 +78,13 @@ SCHEMA = {
             "type": "string",
             "description": "Two or three sentences on what this dataset appears to be.",
         },
+        # No `maxItems` here, deliberately. Structured outputs reject it --
+        # "For 'array' type, property 'maxItems' is not supported" -- and it
+        # fails the WHOLE request with a 400, not the one field. The cap is
+        # stated in the system prompt and enforced again in run(), because a
+        # limit the transport cannot carry has to live somewhere it can.
         "questions": {
             "type": "array",
-            "maxItems": 5,
             "items": {
                 "type": "object",
                 "properties": {
@@ -111,6 +115,11 @@ SCHEMA = {
     "required": ["declarations", "reasoning", "questions", "unresolved"],
     "additionalProperties": False,
 }
+
+
+# The question budget. Rationing questions is a design rule, not a nicety: the
+# tool is worth using again only if answering it once was cheap.
+MAX_QUESTIONS = 5
 
 
 @dataclass
@@ -163,7 +172,7 @@ def run(payload: dict, provider, context: str | None = None) -> Interview:
     return Interview(
         declarations=data.get("declarations") or {},
         reasoning=data.get("reasoning") or "",
-        questions=data.get("questions") or [],
+        questions=(data.get("questions") or [])[:MAX_QUESTIONS],
         unresolved=data.get("unresolved") or [],
         model=response.model,
         input_tokens=response.input_tokens,

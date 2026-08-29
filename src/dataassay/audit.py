@@ -49,6 +49,22 @@ class Audit:
     coverage: Coverage
     catalog_version: str = CATALOG_VERSION
     manifest_path: str | None = None
+    # Question codes a person has seen and deliberately declined to answer.
+    # An unanswered question and a declined one are different states and the
+    # report must not show them as the same thing: the first is work nobody has
+    # done yet, the second is a decision, and presenting a decision as an
+    # outstanding task is how a report trains people to ignore it.
+    skipped_questions: list[str] = field(default_factory=list)
+
+    @property
+    def open_questions(self) -> list:
+        return [q for q in self.profile.questions
+                if q.code not in set(self.skipped_questions)]
+
+    @property
+    def declined_questions(self) -> list:
+        return [q for q in self.profile.questions
+                if q.code in set(self.skipped_questions)]
 
     def to_dict(self) -> dict:
         d = self.profile.to_dict()
@@ -57,6 +73,7 @@ class Audit:
             "structure": self.structure.to_dict(),
             "coverage": self.coverage.to_dict(),
             "manifest": self.manifest_path,
+            "skipped_questions": self.skipped_questions,
             "findings": [f.to_dict() for f in self.findings],
         }
         return d
@@ -142,6 +159,7 @@ def run(
         manifest_path=(
             str(manifest.source_path) if manifest and manifest.source_path else None
         ),
+        skipped_questions=list(manifest.skipped) if manifest else [],
     )
 
 

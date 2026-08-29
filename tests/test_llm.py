@@ -59,6 +59,50 @@ class FakeProvider:
                                      input_tokens=10, output_tokens=5)
 
 
+class TestTheSchemaTheApiWillAccept:
+    """Structured outputs rejects some JSON Schema keywords outright.
+
+    `maxItems` on an array returns a 400 that fails the ENTIRE request, not the
+    one field -- so a keyword added for tidiness silently breaks the only
+    feature that talks to the network. The unit tests could not catch it,
+    because the fake provider never validates the schema; only a live call did.
+    These are the cheap guard that stands in for one.
+    """
+
+    UNSUPPORTED = ("maxItems", "minItems", "maxProperties", "minProperties",
+                   "maxLength", "minLength", "pattern", "format")
+
+    def _walk(self, node, path="schema"):
+        found = []
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in self.UNSUPPORTED:
+                    found.append(f"{path}.{key}")
+                found += self._walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                found += self._walk(item, f"{path}[{i}]")
+        return found
+
+    def test_the_schema_uses_no_rejected_keyword(self):
+        assert self._walk(interview_mod.SCHEMA) == []
+
+    def test_the_question_cap_is_enforced_in_code(self):
+        """The cap the schema is not allowed to carry has to live somewhere."""
+        many = {
+            "declarations": {},
+            "reasoning": "",
+            "questions": [
+                {"column": None, "ask": f"q{i}", "proposed_answer": None,
+                 "why_it_matters": ""}
+                for i in range(12)
+            ],
+            "unresolved": [],
+        }
+        out = interview_mod.run({}, FakeProvider(many))
+        assert len(out.questions) == interview_mod.MAX_QUESTIONS
+
+
 class TestTheBoundary:
     def test_no_core_module_imports_a_network_library(self):
         """The core promise, asserted rather than claimed.
@@ -83,6 +127,39 @@ class TestTheBoundary:
                     if name in NETWORK_MODULES:
                         offenders.append(f"{py.relative_to(root)}: {name}")
         assert offenders == []
+
+    def test_the_socket_block_is_actually_in_force(self):
+        """Guard the guard.
+
+        The autouse fixture in conftest is what makes every other test in this
+        suite a no-network test. If it silently stopped working, nothing would
+        fail -- the suite would just quietly go back to being allowed online,
+        and the strongest claim the package makes would be unasserted. So it
+        gets asserted directly.
+        """
+        import socket
+
+        from conftest import NetworkAccessDenied
+
+        with pytest.raises(NetworkAccessDenied):
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        with pytest.raises(NetworkAccessDenied):
+            socket.create_connection(("example.invalid", 80))
+
+    def test_a_full_audit_runs_with_the_network_torn_out(self, write_csv):
+        """The product claim, end to end.
+
+        Not "no core module imports a network library" (that is the static
+        test) but "a real audit completes with no socket layer underneath it".
+        This is the one a buyer who will not upload their data is actually
+        asking about.
+        """
+        from dataassay import audit as audit_mod
+
+        csv = write_csv("local.csv", "date,value\n" + "".join(
+            f"2026-01-{d:02d},{d * 1.5}\n" for d in range(1, 29)))
+        result = audit_mod.run(csv)
+        assert result.profile.provenance.row_count == 28
 
     def test_the_adapter_is_optional(self):
         # Core must import and run with the extra absent.
@@ -172,8 +249,18 @@ class TestInterview:
         assert "You do not choose which checks run" in interview_mod.SYSTEM
         assert "not given rows" in interview_mod.SYSTEM
 
-    def test_the_schema_caps_the_question_budget(self):
-        assert interview_mod.SCHEMA["properties"]["questions"]["maxItems"] == 5
+    def test_the_question_budget_is_capped_somewhere(self):
+        """This used to assert the cap lived in the schema, as `maxItems: 5`.
+
+        It passed for as long as nothing made a real request. Structured
+        outputs rejects `maxItems` with a 400 that fails the whole call, so the
+        test was not merely testing the wrong thing -- it was pinning the
+        defect in place, and would have failed the fix. The budget is real; the
+        schema is just not where it can be expressed.
+        """
+        assert "maxItems" not in interview_mod.SCHEMA["properties"]["questions"]
+        assert interview_mod.MAX_QUESTIONS == 5
+        assert "at most five" in interview_mod.SYSTEM
 
 
 class TestCredentials:

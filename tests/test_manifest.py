@@ -125,3 +125,112 @@ class TestSchemaDrift:
     def test_an_unchanged_file_drifts_nothing(self, data):
         _write_manifest(data)
         assert not [f for f in run(data).findings if f.check_id == "schema_drift"]
+
+
+class TestDeclareCommand:
+    """`assay declare` is the write path the manifest always assumed existed.
+
+    Before it, `declared` could only be filled by hand-editing JSON. The
+    guarantee it carries -- that a human decided -- was being paid for with
+    friction, and the friction is why answers went unrecorded. A person running
+    a command is still a person deciding, so these tests hold the guarantee
+    (nothing writes `declared` without being asked) while the cost of keeping
+    it is one line.
+    """
+
+    @staticmethod
+    def _main(argv):
+        from dataassay.cli import main
+        return main(argv)
+
+    @staticmethod
+    def _manifest(data):
+        import json
+        return json.loads(
+            data.with_name(data.name + ".assay.json").read_text())
+
+    @pytest.fixture
+    def asks_something(self, write_csv):
+        """A file the profiler has a real question about.
+
+        The shared `data` fixture is clean enough that it asks nothing, which
+        made the skip tests silently vacuous -- they reported as passing while
+        exercising no code at all. A mostly-empty column reliably earns a
+        question.
+        """
+        return write_csv("sparse.csv", "d,payload,rare\n" + "".join(
+            f"2026-01-{(i % 28) + 1:02d},{i},{i if i % 12 == 0 else ''}\n"
+            for i in range(60)))
+
+    def test_a_declaration_is_recorded_and_then_honored(self, data):
+        assert self._main(["init", str(data)]) == 0
+        assert self._main(["declare", str(data), "--time-axis", "d"]) == 0
+        assert self._manifest(data)["declared"]["time_axis"] == "d"
+        # The point of writing it down: the next audit does not re-derive it.
+        assert run(data).structure.time_axis_declared is True
+
+    def test_a_declaration_naming_a_missing_column_is_refused(self, data):
+        assert self._main(["init", str(data)]) == 0
+        assert self._main(["declare", str(data), "--time-axis", "nope"]) == 2
+        # Refused means nothing was written, not written-then-warned.
+        assert self._manifest(data)["declared"] == {}
+
+    def test_skipping_moves_a_question_out_of_the_open_list(self, asks_something):
+        data = asks_something
+        assert self._main(["init", str(data)]) == 0
+        a = run(data)
+        assert a.profile.questions, "fixture must ask something to test skipping"
+        code = a.profile.questions[0].code
+        assert self._main(["declare", str(data), "--skip", code]) == 0
+        after = run(data)
+        assert code in after.skipped_questions
+        assert code not in [q.code for q in after.open_questions]
+        assert code in [q.code for q in after.declined_questions]
+
+    def test_a_skip_can_be_reopened(self, asks_something):
+        data = asks_something
+        assert self._main(["init", str(data)]) == 0
+        a = run(data)
+        assert a.profile.questions, "fixture must ask something to test skipping"
+        code = a.profile.questions[0].code
+        assert self._main(["declare", str(data), "--skip", code]) == 0
+        assert self._main(["declare", str(data), "--unskip", code]) == 0
+        assert run(data).skipped_questions == []
+
+    def test_accepting_proposals_moves_them_across_and_empties_proposed(self, data):
+        import json
+        assert self._main(["init", str(data)]) == 0
+        path = data.with_name(data.name + ".assay.json")
+        raw = json.loads(path.read_text())
+        raw["proposed"] = {"time_axis": "d"}
+        path.write_text(json.dumps(raw))
+
+        assert self._main(["declare", str(data), "--accept-proposed"]) == 0
+        m = self._manifest(data)
+        assert m["declared"]["time_axis"] == "d"
+        # Emptied, so nothing is left looking like it is still awaiting a call.
+        assert m["proposed"] == {}
+
+    def test_a_model_proposal_is_never_applied_on_its_own(self, data):
+        """The guarantee `declared` exists to carry.
+
+        A proposal sitting in the manifest must stay inert until a person says
+        otherwise. If this ever passes without --accept-proposed, the manifest
+        stops meaning anything.
+        """
+        import json
+        assert self._main(["init", str(data)]) == 0
+        path = data.with_name(data.name + ".assay.json")
+        raw = json.loads(path.read_text())
+        raw["proposed"] = {"time_axis": "d"}
+        path.write_text(json.dumps(raw))
+
+        run(data)  # a full audit must not promote it
+        assert self._manifest(data)["declared"] == {}
+
+    def test_doing_nothing_is_an_error_not_a_silent_success(self, data):
+        assert self._main(["init", str(data)]) == 0
+        assert self._main(["declare", str(data)]) == 2
+
+    def test_it_refuses_without_a_manifest(self, data):
+        assert self._main(["declare", str(data), "--time-axis", "d"]) == 2

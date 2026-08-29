@@ -18,9 +18,15 @@ report next to what did run.
 
 ## Status
 
-**v0.2.0 — the check catalog.** `assay audit --report out.html` writes a
-self-contained report and a flagged-items CSV. `assay profile` characterizes;
-`assay catalog` prints what the checks are; `assay init` writes a manifest.
+**v0.7.0.** `assay audit --report out.html` writes a self-contained report and
+a flagged-items CSV. `assay profile` characterizes; `assay catalog` prints what
+the checks are; `assay init` writes a manifest and `assay declare` answers it;
+`assay interview` optionally asks a model to propose answers, sending metadata
+only.
+
+Validated against a corpus of known defects (see `VALIDATION.md`) and swept
+against 104 real CSVs from the pipeline it was built for, where the metric that
+matters is defects per file rather than findings per file.
 
 Thirteen checks, each earned by a real defect found in a production pipeline:
 constant/all-zero columns, mojibake, duplicate rows, duplicate grain, future
@@ -62,6 +68,7 @@ pip install dataassay
 assay audit data.parquet          # characterize, then check
 assay profile data.csv            # characterize only
 assay init data.csv               # write a manifest to answer its questions
+assay declare data.csv --time-axis d   # record an answer in it
 assay catalog                     # what the checks are and why
 assay audit data.csv --json       # the machine contract
 assay interview data.csv          # optional: ask a model (metadata only)
@@ -108,6 +115,27 @@ Answering once is what makes the tool usable more than once. The next audit of
 the same dataset asks nothing, and it can run where there is nobody to ask at
 all — a pipeline, a server, CI. The conversation is just the most convenient
 way to author the file the first time.
+
+`assay declare` is how you answer without opening the file:
+
+```
+assay declare data.csv --time-axis observed_at
+assay declare data.csv --grain observed_at,site
+assay declare data.csv --skip high_null        # seen it, not answering
+assay declare data.csv --accept-proposed       # the model was right
+```
+
+Running a command is a person deciding, so `declared` keeps meaning what it
+says. Two things it refuses: a declaration naming a column the file does not
+have (that would gate checks on a fiction), and promoting anything out of
+`proposed` unless you pass `--accept-proposed` — the model never gets a quiet
+path into `declared`.
+
+A skipped question is not a hidden one. It moves out of the open list and into
+a section of its own, because a question nobody has looked at and a question
+someone has judged not worth answering are different states, and showing a
+decision as outstanding work is how a report teaches people to stop reading
+it.
 
 ## The interview (optional)
 

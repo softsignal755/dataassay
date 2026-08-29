@@ -42,6 +42,15 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: pytest
+      # "Nothing leaves your machine" is the product claim, so it is asserted
+      # twice and neither half is redundant. The suite as a whole already runs
+      # with the socket layer torn out (see tests/conftest.py), which is the
+      # behavioral proof. This step names the boundary tests explicitly so the
+      # claim is legible in the CI log rather than implied by a green dot, and
+      # so a change that removed the blocker would fail HERE, by name, instead
+      # of silently letting the suite back online.
+      - name: Verify the no-network promise
+        run: pytest tests/test_llm.py -k TheBoundary -q
 
   build:
     needs: test

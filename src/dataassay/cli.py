@@ -168,12 +168,24 @@ def _render_audit(a: audit_mod.Audit, width: int = 88) -> str:
     for cid, question in cov.blocked:
         out += _wrap(f"? {cid}: {question}", width, "    ")
 
-    if a.profile.questions:
+    if a.open_questions:
         out.append("")
-        out.append(f"  PROFILE QUESTIONS  ({len(a.profile.questions)})")
-        for n in a.profile.questions:
+        out.append(f"  PROFILE QUESTIONS  ({len(a.open_questions)})")
+        for n in a.open_questions:
             where = f"{n.column}: " if n.column else ""
             out += _wrap(f"• {where}{n.message}", width, "    ")
+
+    # Declined questions are listed, not hidden. Hiding them would make the
+    # report look cleaner than the dataset is, and the whole discipline here is
+    # that a check which could not run is a deliberate deliverable. The
+    # difference from the block above is the framing: nobody owes an answer to
+    # anything down here.
+    if a.declined_questions:
+        out.append("")
+        out.append(f"  ANSWERED WITH 'NOT WORTH IT'  ({len(a.declined_questions)})")
+        for n in a.declined_questions:
+            where = f"{n.column}: " if n.column else ""
+            out += _wrap(f"– {where}{n.message}", width, "    ")
 
     for note in s.assumptions:
         out += _wrap(f"~ {note}", width, "    ")
@@ -364,6 +376,102 @@ def _cmd_interview(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_declare(args: argparse.Namespace) -> int:
+    """Record a human decision in the manifest.
+
+    This exists because the manifest's guarantee -- that `declared` means a
+    PERSON said so -- was, until now, enforced by making a person hand-edit
+    JSON. That is a guarantee paid for with friction, and friction is why the
+    answers never got written down. Running a command IS a person deciding, so
+    the guarantee survives while the cost of keeping it drops to one line.
+
+    What is still refused: this never writes `declared` from the model's
+    `proposed` block without being told to, one item at a time or via an
+    explicit --accept-proposed. The model does not get a quiet path in.
+    """
+    path = Path(args.path)
+    if not path.is_file():
+        print(f"assay: no such file: {path}", file=sys.stderr)
+        return 2
+
+    target = Path(args.manifest) if args.manifest else manifest_mod.path_for(path)
+    if not target.is_file():
+        print(f"assay: no manifest at {target.name}. Run `assay init "
+              f"{path.name}` first.", file=sys.stderr)
+        return 2
+    m = manifest_mod.load(target)
+
+    changes: list[str] = []
+
+    if args.accept_proposed:
+        if not m.proposed:
+            print("assay: nothing in 'proposed' to accept.", file=sys.stderr)
+            return 2
+        for key, value in m.proposed.items():
+            m.declared[key] = value
+            shown = " × ".join(value) if isinstance(value, list) else value
+            changes.append(f"declared {key} = {shown}   (accepted from proposed)")
+        m.proposed = {}
+
+    if args.time_axis:
+        m.declared["time_axis"] = args.time_axis
+        changes.append(f"declared time_axis = {args.time_axis}")
+    if args.grain:
+        grain = [c.strip() for c in args.grain.split(",") if c.strip()]
+        m.declared["grain"] = grain
+        changes.append(f"declared grain = {' × '.join(grain)}")
+    if args.forecast_column:
+        m.declared["forecast_column"] = args.forecast_column
+        changes.append(f"declared forecast_column = {args.forecast_column}")
+
+    for code in args.skip or []:
+        if code not in m.skipped:
+            m.skipped.append(code)
+            changes.append(f"skipped {code}   (recorded as a deliberate gap)")
+
+    for code in args.unskip or []:
+        if code in m.skipped:
+            m.skipped.remove(code)
+            changes.append(f"reopened {code}")
+
+    if not changes:
+        print("assay: nothing to do. Pass --time-axis / --grain / "
+              "--forecast-column / --skip / --accept-proposed.", file=sys.stderr)
+        return 2
+
+    # A declaration that names a column the file does not have is worse than no
+    # declaration: it silently gates checks on a fiction. Same rule the model's
+    # proposals are held to, applied to people too.
+    try:
+        result = audit_mod.run(path, use_manifest=False)
+        known = {c.name for c in result.profile.columns}
+    except UnsupportedFormat as exc:
+        print(f"assay: {exc}", file=sys.stderr)
+        return 2
+    bad = []
+    for key in ("time_axis", "forecast_column"):
+        v = m.declared.get(key)
+        if v and v not in known:
+            bad.append(f"{key}: no column named {v!r}")
+    for col in m.declared.get("grain") or []:
+        if col not in known:
+            bad.append(f"grain: no column named {col!r}")
+    if bad:
+        print("assay: refusing to write a declaration this file cannot support:",
+              file=sys.stderr)
+        for b in bad:
+            print(f"  {b}", file=sys.stderr)
+        print(f"  columns are: {', '.join(sorted(known))}", file=sys.stderr)
+        return 2
+
+    m.write(target)
+    print(f"Updated {target.name}")
+    for c in changes:
+        print(f"  {c}")
+    print("\nThe next audit uses these without asking.")
+    return 0
+
+
 def _cmd_catalog(args: argparse.Namespace) -> int:
     cat = catalog_dict()
     if args.json:
@@ -478,6 +586,39 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="overwrite an existing manifest"
     )
     init.set_defaults(func=_cmd_init)
+
+    declare = sub.add_parser(
+        "declare",
+        help="record a decision in the manifest",
+        description=(
+            "Write an answer into the manifest's 'declared' block, or mark a "
+            "question as one you have seen and are choosing not to answer. "
+            "'declared' means a person decided; running this command is that "
+            "person, which is why it exists rather than leaving you to edit "
+            "JSON by hand. A declaration naming a column the file does not "
+            "have is refused."
+        ),
+    )
+    declare.add_argument("path", help="CSV or Parquet file")
+    declare.add_argument("--manifest", metavar="PATH",
+                         help="manifest to edit (default: alongside the data file)")
+    declare.add_argument("--time-axis", metavar="COL",
+                         help="column holding the observation date")
+    declare.add_argument("--grain", metavar="A,B",
+                         help="comma-separated columns that make a row unique")
+    declare.add_argument("--forecast-column", metavar="COL",
+                         help="column marking rows as forecast rather than actual")
+    declare.add_argument("--skip", action="append", metavar="CODE",
+                         help="record a question as deliberately unanswered "
+                              "(repeatable)")
+    declare.add_argument("--unskip", action="append", metavar="CODE",
+                         help="reopen a question you previously skipped "
+                              "(repeatable)")
+    declare.add_argument("--accept-proposed", action="store_true",
+                         help="move everything the interview proposed into "
+                              "'declared'. Read it first — this is you saying "
+                              "the model was right.")
+    declare.set_defaults(func=_cmd_declare)
 
     interview = sub.add_parser(
         "interview",

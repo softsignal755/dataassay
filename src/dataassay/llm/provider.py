@@ -96,7 +96,12 @@ class AnthropicProvider:
         except anthropic.RateLimitError as exc:
             raise ProviderError("Rate limited by the Anthropic API.") from exc
         except anthropic.APIStatusError as exc:
-            raise ProviderError(f"Anthropic API error {exc.status_code}.") from exc
+            # Carry the API's own explanation. Reporting only the status code
+            # turned a one-line schema fix into a debugging session: a 400 here
+            # is nearly always a malformed request that names its own cause.
+            detail = getattr(exc, "message", "") or str(exc)
+            raise ProviderError(
+                f"Anthropic API error {exc.status_code}: {detail}") from exc
         except anthropic.APIConnectionError as exc:
             raise ProviderError(
                 "Could not reach the Anthropic API. This tool works fully "
