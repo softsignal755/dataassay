@@ -1,0 +1,95 @@
+# CI for the dataassay package.
+#
+# Publishing uses PyPI Trusted Publishing (OIDC): no API token is stored here or
+# anywhere else. Configure the publisher once at
+#   https://pypi.org/manage/project/dataassay/settings/publishing/
+# with workflow name `ci.yml` and environment `pypi`.
+#
+# This package was extracted from a private monorepo, where it lived in a
+# dataassay/ subdirectory. That is why the tag prefix used to be `dataassay-v*`:
+# a bare `v*` was ambiguous beside the parent project's own tags. Standalone, a
+# bare `v*` is correct and the prefix is gone.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        # The floor and the ceiling are what break on other platforms; the
+        # middle versions add cost without adding signal.
+        include:
+          - { os: macos-latest, python: "3.10" }
+          - { os: macos-latest, python: "3.13" }
+          - { os: windows-latest, python: "3.10" }
+          - { os: windows-latest, python: "3.13" }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: pytest
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build
+      # Install the built wheel into a clean environment and confirm the only
+      # things present are dataassay and duckdb. The one-dependency promise is a
+      # product claim, so it gets asserted rather than assumed.
+      - name: Verify the dependency surface
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install dist/*.whl
+          /tmp/clean/bin/assay --version
+          installed=$(/tmp/clean/bin/pip list --format=freeze | cut -d= -f1 | grep -viE '^(pip|setuptools|wheel)$' | sort | tr '\n' ' ')
+          echo "installed: $installed"
+          [ "$installed" = "dataassay duckdb " ] || { echo "unexpected dependency surface"; exit 1; }
+      # The llm extra is the only place a network dependency may appear, and it
+      # must stay genuinely optional. Both halves are the product claim.
+      - name: Verify the llm extra is optional and adds anthropic
+        run: |
+          python -m venv /tmp/extra
+          /tmp/extra/bin/pip install "$(ls dist/*.whl)[llm]"
+          /tmp/extra/bin/python -c "import dataassay.llm.provider"
+          /tmp/extra/bin/pip list --format=freeze | grep -qi '^anthropic=' \
+            || { echo "llm extra did not install anthropic"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
