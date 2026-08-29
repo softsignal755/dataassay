@@ -45,7 +45,16 @@ def _series_sql(ctx: CheckContext, value_col: str | None = None) -> str:
     cols += [q(g) for g in s.group_columns]
     if value_col:
         cols.append(f"{q(value_col)} AS v")
-    where = f" WHERE {q(value_col)} IS NOT NULL" if value_col else ""
+    # NaN and Inf are dropped alongside the nulls, and for the same reason: a
+    # check reads a series to measure it, and neither is a measurement. Left
+    # in, they do not just skip a row -- every arithmetic comparison against
+    # NaN is false, so a step becomes "x nan" and a threshold silently stops
+    # rejecting anything. The profile still counts and reports them; this is
+    # only about what the checks are asked to reason over.
+    where = (
+        f" WHERE {q(value_col)} IS NOT NULL AND isfinite({q(value_col)})"
+        if value_col else ""
+    )
     return f"SELECT {', '.join(cols)} FROM {ctx.source}{where}"
 
 

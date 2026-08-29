@@ -197,6 +197,63 @@ def _comissing_notes(
     return notes, explained
 
 
+def _nonfinite_notes(
+    con: duckdb.DuckDBPyConnection,
+    source: str,
+    params: list[str],
+    cols: list[columns_mod.ColumnProfile],
+) -> tuple[list[Note], set[str]]:
+    """Collapse columns whose NaNs land on the SAME rows into one finding.
+
+    Seven columns each carrying one NaN is rarely seven facts. It is usually
+    one: a row that a whole calculation failed on, written out anyway. Asking
+    about each column separately buries the interesting part -- which row, and
+    what failed -- under repetition.
+
+    As with co-missingness, a shared count is only a hint. Two columns can each
+    have one NaN on different rows, and calling that one block would be a
+    fabricated finding -- so co-occurrence is checked before anything is
+    claimed.
+    """
+    notes: list[Note] = []
+    explained: set[str] = set()
+
+    by_count: dict[int, list[columns_mod.ColumnProfile]] = {}
+    for c in cols:
+        if c.nonfinite:
+            by_count.setdefault(c.nonfinite, []).append(c)
+
+    for count, group in sorted(by_count.items()):
+        remaining = list(group)
+        while remaining:
+            anchor = remaining[0]
+            exprs = ", ".join(
+                f"count(*) FILTER (WHERE NOT isfinite({columns_mod.q(anchor.name)}) "
+                f"AND NOT isfinite({columns_mod.q(c.name)})) AS m{i}"
+                for i, c in enumerate(remaining)
+            )
+            row = con.execute(f"SELECT {exprs} FROM {source}", params).fetchone()
+            block = [c for c, hits in zip(remaining, row, strict=True)
+                     if hits == count]
+            remaining = [c for c in remaining if c not in block]
+            if len(block) < 2:
+                continue
+            names = [c.name for c in block]
+            explained.update(names)
+            notes.append(Note(
+                QUESTION, "nonfinite_block", None,
+                f"{len(names)} columns carry NaN or infinity on the same "
+                f"{count:,} row(s): " + ", ".join(names)
+                + ". They were written, not left blank, so one calculation "
+                "failed across the row rather than one reading going missing. "
+                "Every statistic below is computed over the finite values "
+                "only. What produced that row?",
+                {"columns": names, "rows_affected": count},
+            ))
+
+    return notes, explained
+
+
 def _raw_notes(scan: rawscan_mod.RawScan) -> list[Note]:
     notes: list[Note] = []
     if not scan.applicable:
@@ -277,7 +334,21 @@ def _column_notes(
     explained = explained or set()
     for c in cols:
         for prop in c.observed_properties():
-            if prop["property"] == "sigma_establishable" and not prop["holds"]:
+            if prop["property"] == "non_finite":
+                if c.name in explained:
+                    continue
+                notes.append(Note(
+                    QUESTION, "non_finite_values", c.name,
+                    f"{c.nonfinite:,} value(s) are NaN or infinite — present in "
+                    "the file, but not numbers. Something wrote them, so this "
+                    "is not the same as a missing value: a failed calculation "
+                    "and an absent reading have different causes and different "
+                    "fixes. Every statistic for this column is computed over "
+                    f"the {c.non_null:,} finite value(s) only.",
+                    {"nonfinite": c.nonfinite, "finite": c.non_null,
+                     "rows": c.rows},
+                ))
+            elif prop["property"] == "sigma_establishable" and not prop["holds"]:
                 notes.append(Note(
                     LIMITATION, "sigma_not_establishable", c.name,
                     "Sigma-based outlier rules are not valid on this column: "
@@ -346,6 +417,9 @@ def build(
         schema = [(c.name, c.declared_type) for c in prov.columns]
         cols = columns_mod.profile_columns(con, source, params, schema, prov.row_count)
         block_notes, explained = _comissing_notes(con, source, params, cols)
+        nf_notes, nf_explained = _nonfinite_notes(con, source, params, cols)
+        block_notes += nf_notes
+        explained |= nf_explained
     finally:
         if owned:
             con.close()

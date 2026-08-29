@@ -89,6 +89,9 @@ class ColumnProfile:
     non_null: int
     distinct: int
     distinct_exact: bool
+    # Present, but not a number: NaN or +/-Inf. Counted apart from both the
+    # nulls and the measurable values, because it is neither.
+    nonfinite: int = 0
     quantiles: dict[str, float] = field(default_factory=dict)
     mean: float | None = None
     stddev: float | None = None
@@ -109,7 +112,11 @@ class ColumnProfile:
 
     @property
     def nulls(self) -> int:
-        return self.rows - self.non_null
+        # rows = nulls + nonfinite + non_null, and the three stay distinct. A
+        # cell reading 'nan' is not an empty cell: something wrote a number
+        # there and the number is unusable, which is a different fault with a
+        # different cause.
+        return self.rows - self.non_null - self.nonfinite
 
     @property
     def null_fraction(self) -> float:
@@ -127,6 +134,11 @@ class ColumnProfile:
         def add(name: str, holds: bool, evidence: str) -> None:
             out.append({"property": name, "holds": holds, "evidence": evidence})
 
+        if self.nonfinite:
+            add("non_finite", True,
+                f"{self.nonfinite:,} of {self.rows:,} values are NaN or "
+                f"infinite; every statistic below is computed over the "
+                f"{self.non_null:,} finite value(s) only")
         if self.non_null == 0:
             add("all_null", True, f"0 of {self.rows} rows carry a value")
             return out
@@ -208,6 +220,7 @@ class ColumnProfile:
             "rows": self.rows,
             "non_null": self.non_null,
             "nulls": self.nulls,
+            "nonfinite": self.nonfinite,
             "null_fraction": round(self.null_fraction, 6),
             "distinct": self.distinct,
             "distinct_exact": self.distinct_exact,
@@ -250,6 +263,16 @@ def _aggregate_sql(name: str, kind: str, exact_distinct: bool) -> list[tuple[str
     """(alias_suffix, expression) pairs for one column."""
     c = q(name)
     distinct = f"count(DISTINCT {c})" if exact_distinct else f"approx_count_distinct({c})"
+    if kind == "numeric":
+        # NaN and +/-Inf are PRESENT but not measurable. Left in, they do not
+        # merely skew a statistic -- stddev_samp raises "out of range" and the
+        # whole audit dies on the one file that most needed auditing. So every
+        # numeric statistic is computed over the finite values only, and the
+        # non-finite ones are counted separately and reported. Folding them
+        # into the null count would be the other easy mistake: a column that
+        # says 'nan' is not a column that says nothing, and the difference is
+        # the finding.
+        c = f"(CASE WHEN isfinite({q(name)}) THEN {q(name)} END)"
     parts = [
         ("non_null", f"count({c})"),
         ("distinct", distinct),
@@ -257,6 +280,11 @@ def _aggregate_sql(name: str, kind: str, exact_distinct: bool) -> list[tuple[str
         ("max", f"max({c})"),
     ]
     if kind == "numeric":
+        parts.append(
+            ("nonfinite",
+             f"count(*) FILTER (WHERE {q(name)} IS NOT NULL "
+             f"AND NOT isfinite({q(name)}))")
+        )
         # Significant digits of the shortest round-tripping representation:
         # drop the exponent, keep the digits, drop leading zeros.
         sig = (
@@ -332,6 +360,7 @@ def profile_columns(
         )
 
         if kind == "numeric":
+            p.nonfinite = int(g("nonfinite") or 0)
             p.mean = _f(g("mean"))
             p.stddev = _f(g("stddev"))
             qs = g("quantiles") or []
