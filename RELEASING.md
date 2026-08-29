@@ -14,21 +14,35 @@ three operating systems.
 ## One-time PyPI setup
 
 CI publishes via **Trusted Publishing** (OIDC), so there is no API token to
-store or rotate.
+store, rotate, or leak. There is nothing to upload by hand — not even the first
+release.
 
-1. Create the project on PyPI by uploading the first release manually. PyPI
-   cannot configure a trusted publisher for a name that does not exist yet, so
-   the first upload is always a manual one:
-   ```
-   .venv/bin/pip install twine
-   .venv/bin/twine upload dist/*
-   ```
-2. Then configure the trusted publisher at
-   `https://pypi.org/manage/project/dataassay/settings/publishing/`:
+1. Configure a **pending publisher** at
+   `https://pypi.org/manage/account/publishing/`. "Pending" is the form a
+   trusted publisher takes for a project that does not exist yet: it creates the
+   project the first time it publishes, and converts itself into a normal
+   publisher at that moment. Fill in:
+   - PyPI project name: `dataassay`
    - Owner / repository: this repo
    - Workflow: `ci.yml`
    - Environment: `pypi`
-3. Every release after that is just a tag.
+2. Create the `pypi` environment in GitHub: **Settings → Environments → New
+   environment → `pypi`**. It holds no secrets — that is the point of OIDC — but
+   the publish job declares `environment: pypi` and GitHub fails the job if the
+   name does not exist.
+3. Tag. The first `v*` tag creates the project on PyPI and publishes it.
+
+An earlier version of this file said the first release had to go up manually
+with twine because a publisher could not be configured for a name that does not
+exist. That has not been true since PyPI added pending publishers, and following
+it would have meant an unnecessary API token on the one path built to avoid one.
+
+A **PyPI organization is not required to publish.** It governs shared ownership
+and namespace management, nothing more. Organization requests are reviewed by
+admins periodically with no committed timeline — waits of weeks are ordinary and
+approvals have been paused outright before now — so do not sequence a release
+behind one. Publish from the personal account; move the project into the
+organization if and when it is approved.
 
 ## Cutting a release
 
@@ -37,7 +51,7 @@ store or rotate.
 2. `./check.sh`
 3. Commit, then tag:
    ```
-   git tag v0.6.2 && git push --tags
+   git tag v0.7.0 && git push --tags
    ```
    The tag is what triggers publication — `ci.yml` runs the full gate on every
    push, but only a `v*` tag reaches the `publish` job.
