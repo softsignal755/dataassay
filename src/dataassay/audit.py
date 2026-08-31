@@ -14,11 +14,11 @@ from pathlib import Path
 import duckdb
 
 from dataassay import manifest as manifest_mod
+from dataassay import profile as profile_mod
 from dataassay import rollup as rollup_mod
 from dataassay import structure as structure_mod
 from dataassay.checks.base import Confidence, Finding
 from dataassay.checks.registry import CATALOG, CATALOG_VERSION
-from dataassay import profile as profile_mod
 from dataassay.profile import Profile, build
 from dataassay.provenance import Column, reader_for, source_expr
 from dataassay.structure import Structure
@@ -61,8 +61,8 @@ class Audit:
     # file itself. The provenance stays the file's -- the same bytes produced
     # it -- but a reader must never mistake a rolled-up finding for one about
     # a row that exists on disk.
-    level: "rollup_mod.Level | None" = None
-    rollups: list["Audit"] = field(default_factory=list)
+    level: rollup_mod.Level | None = None
+    rollups: list[Audit] = field(default_factory=list)
     rollup_withheld: str = ""
 
     @property

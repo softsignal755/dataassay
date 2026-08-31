@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 
 import duckdb
 
-from dataassay.columns import PERCENTISH_NAME, q
+from dataassay.columns import q
 from dataassay.structure import Structure
 
 # How a column combines across the key being dropped. The distinction is
